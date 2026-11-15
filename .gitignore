@@ -1,0 +1,13 @@
+.build/
+.swiftpm/
+build/
+*.xcodeproj/
+xcuserdata/
+.DS_Store
+
+# Claude Code local state (rules/skills committed; local config excluded)
+.claude/settings.local.json
+.claude/projects/
+.claude/todos/
+.claude/*.jsonl
+.claude/cache/
