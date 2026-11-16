@@ -73,7 +73,8 @@ menu bar when you close its window. Turn the menu bar item off in
    If the tool is not installed, the app deletes the folders instead, except for
    rules marked `canDeleteWithoutCommand: false` (pnpm store, VM disks).
    For the Podman and Docker VM disks, the size shown is what
-   `system df` says the prune can free, not the size of the disk image.
+   `system df` says the prune can free, not the size of the disk image. For
+   Podman it adds the VM's journal logs above 100 MB, which the clean deletes.
    The VM must be running for the app to get that size. Volumes are kept.
 2. Claude Code worktrees are removed with `git worktree remove` without
    `--force`. The branch and its commits stay in the repository. A worktree

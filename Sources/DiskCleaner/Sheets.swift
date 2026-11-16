@@ -59,7 +59,7 @@ struct ResultsView: View {
         let succeeded = model.outcomes.filter(\.succeeded)
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
-                Text(model.isCleaning ? "Cleaning…" : "Done").font(.title2.bold())
+                Text(model.isMeasuringCleanSizes ? "Measuring…" : model.isCleaning ? "Cleaning…" : "Done").font(.title2.bold())
                 Text("\(model.outcomes.count.formatted()) of \(model.expectedOutcomes.formatted())")
                     .foregroundStyle(.secondary)
                     .monospacedDigit()

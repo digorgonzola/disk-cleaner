@@ -23,7 +23,28 @@ private final class ProcessHandle: @unchecked Sendable {
     let process: Process
     init(_ process: Process) { self.process = process }
 
-    func terminate() { if process.isRunning { process.terminate() } }
+    /// Stops the process and everything it started. A shell killed alone leaves its children
+    /// running: `a && b` keeps `a` alive, for example a `podman machine ssh` that hangs.
+    func terminate() {
+        guard process.isRunning else { return }
+        let descendants = Self.descendants(of: process.processIdentifier)
+        process.terminate()
+        for pid in descendants { kill(pid, SIGTERM) }
+    }
+
+    static func descendants(of root: pid_t) -> [pid_t] {
+        var found: [pid_t] = []
+        var parents = [root]
+        while let parent = parents.popLast() {
+            var children = [pid_t](repeating: 0, count: 256)
+            let bytes = proc_listpids(UInt32(PROC_PPID_ONLY), UInt32(parent), &children, Int32(children.count * MemoryLayout<pid_t>.size))
+            let count = max(Int(bytes) / MemoryLayout<pid_t>.size, 0)
+            let direct = children.prefix(count).filter { $0 > 0 }
+            found += direct
+            parents += direct
+        }
+        return found
+    }
 }
 
 enum ProcessRunner {

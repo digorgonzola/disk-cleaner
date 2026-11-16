@@ -209,7 +209,7 @@ struct ActivityStatus: View {
         VStack(alignment: .trailing, spacing: 6) {
             if model.isCleaning {
                 ProgressView().controlSize(.small)
-                Text("Cleaning \(model.cleaningLabel ?? "")…").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(model.isMeasuringCleanSizes ? "Measuring sizes…" : "Cleaning \(model.cleaningLabel ?? "")…").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             } else if model.isScanning {
                 if model.measuredCount == 0 {
                     ProgressView().controlSize(.small)
