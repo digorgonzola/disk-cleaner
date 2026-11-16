@@ -51,8 +51,12 @@ jobs:
         uses: $/.github/actions/wait-for-required-checks
         with:
           # Exact check-run names. Add new gating checks here as workflows grow.
+          # "Audit workflows" (zizmor.yml) runs only when .github/workflows or
+          # .github/actions change. When it does not register in the grace window,
+          # the action counts it as not applicable.
           required-checks: |
             Test & Build
             PR title
+            Audit workflows
           # macOS runners can take a while to be queued.
           grace-seconds: "180"
