@@ -4,6 +4,7 @@ public enum ScanEvent: Sendable {
     case discovered([ScanItem])
     case measured(path: String, usage: Usage)
     case worktreeInspected(path: String, info: WorktreeInfo)
+    case estimated(path: String, reclaimable: Reclaimable)
     case finished
 }
 
@@ -92,7 +93,12 @@ public struct Scanner: Sendable {
 
     private func measure(_ items: [ScanItem], _ continuation: AsyncStream<ScanEvent>.Continuation) async {
         let protected = Dictionary(uniqueKeysWithValues: rules.map { ($0.id, $0.protectedFileNames) })
+        let estimates = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.reclaimableCommand.map { (rule.id, $0) } })
         await forEachConcurrently(items, width: concurrency) { item in
+            // Estimate first, so the folder size never shows as cleanable while the tool answers.
+            if let command = estimates[item.ruleID] {
+                continuation.yield(.estimated(path: item.path, reclaimable: await Reclaimable.estimate(command)))
+            }
             let usage = DiskUsage.usage(of: item.path, protectedNames: protected[item.ruleID] ?? [])
             continuation.yield(.measured(path: item.path, usage: usage))
         }

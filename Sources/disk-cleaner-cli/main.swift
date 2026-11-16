@@ -17,6 +17,7 @@ for await event in Scanner(projectRoots: roots).scan() {
     case .discovered(let found): found.forEach { items[$0.path] = $0 }
     case .measured(let path, let usage): items[path]?.usage = usage
     case .worktreeInspected(let path, let info): items[path]?.worktree = info
+    case .estimated(let path, let reclaimable): items[path]?.reclaimable = reclaimable
     case .finished: break
     }
 }
@@ -27,7 +28,12 @@ for (ruleID, ruleItems) in byRule.sorted(by: { $0.value.reduce(0) { $0 + $1.byte
     guard let rule = rules[ruleID] else { continue }
     let total = ruleItems.reduce(0) { $0 + $1.bytes }
     let tag = rule.isReportOnly ? "review" : rule.risk.rawValue
-    print("\(pad(format(total), 10))  \(rule.name) [\(rule.category.rawValue), \(tag)]  ×\(ruleItems.count)")
+    let onDisk = ruleItems.reduce(0) { $0 + ($1.usage?.bytes ?? 0) }
+    let estimate = ruleItems.compactMap(\.reclaimable).map { reclaimable -> String in
+        if case .unknown(let reason) = reclaimable { return "  (cannot tell what cleaning frees: \(reason))" }
+        return "  (of \(format(onDisk)) on disk)"
+    }.first ?? ""
+    print("\(pad(format(total), 10))  \(rule.name) [\(rule.category.rawValue), \(tag)]  ×\(ruleItems.count)\(estimate)")
     for item in ruleItems.sorted(by: { $0.bytes > $1.bytes }).prefix(ruleItems.count > 1 ? 5 : 0) {
         let shown = item.path.hasPrefix(home) ? "~" + item.path.dropFirst(home.count) : item.path
         let blocker = item.blocker.map { "  ⛔ \($0)" } ?? item.warning.map { "  ⚠ \($0)" } ?? ""

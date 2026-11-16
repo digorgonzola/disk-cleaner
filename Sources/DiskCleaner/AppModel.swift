@@ -129,6 +129,8 @@ final class AppModel {
                 measuredCount += 1
             case .worktreeInspected(let path, let info):
                 items[path]?.worktree = info
+            case .estimated(let path, let reclaimable):
+                items[path]?.reclaimable = reclaimable
             case .finished:
                 break
             }
@@ -296,6 +298,11 @@ final class AppModel {
         selection.subtract(cleaned.map(\.path))
         let remaining = cleaned.filter { FileManager.default.fileExists(atPath: $0.path) }
             .map { ($0.path, rulesByID[$0.ruleID]?.protectedFileNames ?? []) }
+        var estimates: [String: Reclaimable] = [:]
+        for item in cleaned {
+            guard let command = rulesByID[item.ruleID]?.reclaimableCommand else { continue }
+            estimates[item.path] = await Reclaimable.estimate(command)
+        }
 
         let measured = await Task.detached(priority: .userInitiated) {
             await withTaskGroup(of: (String, Usage).self) { group in
@@ -322,6 +329,7 @@ final class AppModel {
             return true
         }
         for (path, usage) in measured { updated[path]?.usage = usage }
+        for (path, reclaimable) in estimates { updated[path]?.reclaimable = reclaimable }
         items = updated
     }
 }

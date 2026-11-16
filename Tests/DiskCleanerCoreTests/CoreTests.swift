@@ -624,3 +624,58 @@ struct UpdateCheckerTests {
         #expect(!UpdateChecker.isUpdate(latest, current: Version("0.1.1")!, skipped: Version("0.2.0")))
     }
 }
+
+struct ReclaimableTests {
+    func output(_ stdout: String, status: Int32 = 0, stderr: String = "") -> ProcessOutput {
+        ProcessOutput(status: status, stdout: stdout, stderr: stderr, timedOut: false)
+    }
+
+    @Test func parsesTheLastLine() {
+        #expect(Reclaimable.parse(output("banner\n510825984\n")) == .bytes(510_825_984))
+        #expect(Reclaimable.parse(output("1.2GB\n")) == .unknown(reason: "the tool's answer was not a size"))
+        #expect(Reclaimable.parse(output("", status: 125, stderr: "Error: cannot connect to Podman\n"))
+            == .unknown(reason: "Error: cannot connect to Podman"))
+    }
+
+    @Test func itemSizeIsTheEstimateWhenThereIsOne() {
+        var item = ScanItem(ruleID: "podman", path: "/x", usage: Usage(bytes: 50_000, lastModified: nil, protectedFiles: []))
+        #expect(item.bytes == 50_000)
+        item.reclaimable = .bytes(1_000)
+        #expect(item.bytes == 1_000)
+        item.reclaimable = .unknown(reason: "stopped")
+        #expect(item.bytes == 0)
+    }
+
+    /// Runs a rule's estimate with fake tools that print what the real ones print.
+    func estimate(_ ruleID: String, tools: [String: String]) async throws -> Reclaimable {
+        let bin = FileManager.default.temporaryDirectory.appendingPathComponent("dc-tools-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: bin) }
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        for (name, script) in tools {
+            let url = bin.appendingPathComponent(name)
+            try ("#!/bin/sh\n" + script).write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        let rule = try #require(RuleCatalog.all.first { $0.id == ruleID })
+        let command = try #require(rule.reclaimableCommand)
+        let output = try await ProcessRunner.run("/bin/zsh", ["-c", command],
+                                                 environment: ["HOME": bin.path, "PATH": bin.path + ":/usr/bin:/bin"])
+        return Reclaimable.parse(output)
+    }
+
+    @Test func podmanEstimateLeavesOutVolumes() async throws {
+        let podman = "printf '510825984 Images\\n0 Containers\\n11732066549 Local Volumes\\n'"
+        #expect(try await estimate("podman", tools: ["podman": podman]) == .bytes(510_825_984))
+    }
+
+    @Test func dockerEstimateReadsDecimalUnits() async throws {
+        let docker = "printf '1.5GB (45%%) Images\\n0B Containers\\n3GB (100%%) Local Volumes\\n512kB Build Cache\\n'"
+        #expect(try await estimate("docker-desktop", tools: ["docker": docker]) == .bytes(1_500_512_000))
+    }
+
+    @Test func stoppedMachineGivesNoEstimate() async throws {
+        let podman = "echo 'Error: unable to connect to Podman socket' >&2; exit 125"
+        #expect(try await estimate("podman", tools: ["podman": podman])
+            == .unknown(reason: "Error: unable to connect to Podman socket"))
+    }
+}
