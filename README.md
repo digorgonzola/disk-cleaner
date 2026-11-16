@@ -1,3 +1,5 @@
+<img src="Resources/AppIcon-1024.png" alt="" width="128" align="right">
+
 # Disk Cleaner
 
 A native macOS app that finds and removes developer and DevOps caches that the
@@ -5,14 +7,34 @@ built-in Storage settings do not show: Claude Code worktrees, `node_modules`,
 `.terragrunt-cache`, `.terraform`, the Terraform plugin cache, the pnpm store,
 uv and pre-commit caches, the Podman VM disk, and more.
 
-## Use
+## Install
+
+Download `DiskCleaner-<version>.zip` from the
+[latest release](https://github.com/digorgonzola/disk-cleaner/releases/latest),
+unzip it and move **Disk Cleaner** to `/Applications`. The app runs on Apple
+silicon and Intel Macs with macOS 14 or later.
+
+The app has an ad-hoc signature, not a Developer ID signature, so macOS blocks
+the first launch of a downloaded copy. Either open System Settings → Privacy &
+Security and click **Open Anyway**, or remove the quarantine flag:
 
 ```bash
-make app            # builds "build/Disk Cleaner.app" (Command Line Tools are enough)
+xattr -dr com.apple.quarantine "/Applications/Disk Cleaner.app"
+```
+
+Each release lists a SHA-256 checksum for the zip.
+
+## Build from source
+
+```bash
+make app            # builds a universal "build/Disk Cleaner.app" (Command Line Tools are enough)
 make install        # copies it to /Applications
 make run            # runs from source without a bundle
+make release        # also packs build/DiskCleaner-<version>.zip and its .sha256
 .build/debug/disk-cleaner [root ...]   # read-only text report, deletes nothing
 ```
+
+## Use
 
 The app scans on launch. Pick items, then click **Clean**. A confirm sheet lists
 every rule, the command it runs or the number of folders it deletes, and the
@@ -25,6 +47,11 @@ size.
 
 By default the app selects safe caches, project artifacts not modified for 30
 days, and clean worktrees not modified for 14 days.
+
+The menu bar shows the free space on the start-up disk, refreshed every 30
+seconds, with a warning symbol below 10% free. The app keeps running in the
+menu bar when you close its window. Turn the menu bar item off in
+**Settings** (⌘,).
 
 ## How cleaning works
 
@@ -75,7 +102,26 @@ folder found inside projects. Run `make test`.
 | `Sources/DiskCleaner` | SwiftUI app. |
 | `Sources/disk-cleaner-cli` | Read-only report. |
 | `Tests/DiskCleanerCoreTests` | Swift Testing tests (`make test`). |
-| `scripts/build-app.sh` | Wraps the release binary in an ad-hoc signed `.app`. |
+| `scripts/build-app.sh` | Builds the universal, ad-hoc signed `.app` and the release zip. |
+| `scripts/make-icon.swift` | Draws `Resources/AppIcon.icns` (`make icon`). |
+| `.github/workflows` | CI, release-please, release build, PR title check. |
+
+## Releases
+
+Releases are automated with [release-please](https://github.com/googleapis/release-please):
+
+1. Commits on `main` follow Conventional Commits (`feat:`, `fix:`, …). PR titles
+   are checked, because squash merges use them as the commit subject.
+2. release-please keeps a release PR open with the next version and the
+   changelog. Merging it tags `vX.Y.Z` and creates the GitHub release.
+3. The tag runs `release.yml` on a macOS runner. It runs the tests, builds the
+   universal app and attaches `DiskCleaner-X.Y.Z.zip` and its `.sha256` to the
+   release.
+
+release-please runs as a GitHub App, because GitHub starts no workflows for tags
+that `GITHUB_TOKEN` creates. The repo needs the App installed, the
+`RELEASE_PLEASE_CLIENT_ID` Actions variable and the
+`RELEASE_PLEASE_APP_PRIVATE_KEY` Actions secret.
 
 ## Notes
 

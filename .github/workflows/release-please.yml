@@ -1,0 +1,39 @@
+name: Release Please
+
+# Keeps one release PR open from the Conventional Commits on main. Merging it writes
+# CHANGELOG.md and version.txt, tags the merge commit vX.Y.Z and creates the GitHub
+# release. The tag then runs release.yml, which builds the app and attaches it.
+#
+# Runs as a GitHub App, not GITHUB_TOKEN: GitHub starts no workflows for tags and PRs
+# that GITHUB_TOKEN creates, so the tag would never be built and the release PR would
+# get no checks.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Serialise release runs; never cancel one mid-tag.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: App token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_PLEASE_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          permission-contents: write # release commit, tag, GitHub release
+          permission-issues: write # the autorelease:* labels
+          permission-pull-requests: write # the release PR
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}

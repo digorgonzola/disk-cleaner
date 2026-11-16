@@ -1,0 +1,32 @@
+name: Swift
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swift-${{ github.ref }}
+  # Cancel superseded PR runs (macOS minutes are costly); let every main run finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    # Drafts are work in progress; mark a PR ready to request CI.
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Toolchain
+        run: |
+          xcode-select -p
+          swift --version
+      - name: Test
+        run: make test
+      - name: Build the universal app
+        run: scripts/build-app.sh
