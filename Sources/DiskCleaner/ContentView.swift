@@ -415,11 +415,12 @@ struct ReclaimableNote: View {
         case .pending:
             Label("Asking the tool what cleaning can free…", systemImage: "hourglass")
                 .foregroundStyle(.secondary)
-        case .bytes:
-            if let usage = item.usage {
-                Label("Can free about \(Format.bytes(item.bytes)) of the \(Format.bytes(usage.bytes)) disk image", systemImage: "internaldrive")
-                    .foregroundStyle(.secondary)
-            }
+        case .bytes(let bytes):
+            let image = item.usage.map { " of the \(Format.bytes($0.bytes)) disk image" } ?? ""
+            Label(bytes == 0 ? "The tool reports nothing to free" + (item.usage.map { " in the \(Format.bytes($0.bytes)) disk image" } ?? "")
+                             : "Can free about \(Format.bytes(bytes))" + image,
+                  systemImage: "internaldrive")
+                .foregroundStyle(.secondary)
         case .unknown(let reason):
             let text = "Cannot tell what cleaning frees: \(reason)"
             Label(text, systemImage: "questionmark.circle")

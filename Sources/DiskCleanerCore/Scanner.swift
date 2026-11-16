@@ -5,6 +5,8 @@ public enum ScanEvent: Sendable {
     case measured(path: String, usage: Usage)
     case worktreeInspected(path: String, info: WorktreeInfo)
     case estimated(path: String, reclaimable: Reclaimable)
+    /// Every location is found and measured. `.estimated` events can still follow, until
+    /// the stream ends.
     case finished
 }
 
@@ -13,17 +15,20 @@ public struct Scanner: Sendable {
     public let projectRoots: [String]
     public let rules: [CleanupRule]
     public let concurrency: Int
+    public let shell: Shell
 
     public init(
         homePath: String = NSHomeDirectory(),
         projectRoots: [String],
         rules: [CleanupRule] = RuleCatalog.all,
-        concurrency: Int = 8
+        concurrency: Int = 8,
+        shell: Shell = .shared
     ) {
         self.homePath = homePath
         self.projectRoots = projectRoots
         self.rules = rules
         self.concurrency = concurrency
+        self.shell = shell
     }
 
     public static let defaultProjectRootNames = [
@@ -50,8 +55,8 @@ public struct Scanner: Sendable {
                 await inspectWorktrees(found.filter { $0.ruleID == "claude-worktrees" }, continuation)
                 // Measure fixed caches first: few, often large, and quick to show.
                 await measure(fixed + found, continuation)
-                await estimates
                 continuation.yield(.finished)
+                await estimates
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -106,7 +111,7 @@ public struct Scanner: Sendable {
         let queries = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.reclaimable.map { (rule.id, $0) } })
         let asking = items.compactMap { item in queries[item.ruleID].map { (item.path, $0) } }
         await forEachConcurrently(asking, width: concurrency) { path, query in
-            guard let reclaimable = await query.estimate() else { return }
+            guard let reclaimable = await query.estimate(shell: shell) else { return }
             continuation.yield(.estimated(path: path, reclaimable: reclaimable))
         }
     }

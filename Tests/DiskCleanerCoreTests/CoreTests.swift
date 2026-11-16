@@ -638,6 +638,19 @@ struct ReclaimableTests {
             == .bytes(1_500_512_000))
         #expect(query.parse(output("banner\n")) == .unknown(reason: "the tool's answer was not a size"))
         #expect(query.parse(output("Images=lots\n")) == .unknown(reason: "the tool's answer was not a size"))
+        // Untrusted output must not crash the app.
+        #expect(query.parse(output("Images=99999999999999999999\n")) == .unknown(reason: "the tool's answer was not a size"))
+        #expect(query.parse(output("Images=9000000000000000000\nContainers=9000000000000000000\n")) == .bytes(.max))
+    }
+
+    @Test func queriesAreOnSinglePathHomeRules() {
+        for rule in RuleCatalog.all where rule.reclaimable != nil {
+            guard case .homePaths(let paths) = rule.target else {
+                Issue.record("\(rule.id): a query needs a home path rule")
+                continue
+            }
+            #expect(paths.count == 1, "\(rule.id)")
+        }
     }
 
     @Test func failuresGiveTheReason() {
@@ -710,17 +723,29 @@ struct ReclaimableTests {
 
         var item: ScanItem?
         var sizesSeen: [Int64] = []
-        for await event in Scanner(homePath: home.path, projectRoots: [], rules: [rule]).scan() {
+        var order: [String] = []
+        let scanner = Scanner(homePath: home.path, projectRoots: [], rules: [rule], shell: Shell(path: "/usr/bin:/bin"))
+        for await event in scanner.scan() {
             switch event {
-            case .discovered(let found): item = found.first ?? item
-            case .measured(_, let usage): item?.usage = usage
-            case .estimated(_, let reclaimable): item?.reclaimable = reclaimable
-            default: break
+            case .discovered(let found):
+                item = found.first ?? item
+            case .measured(_, let usage):
+                item?.usage = usage
+                order.append("measured")
+            case .estimated(_, let reclaimable):
+                item?.reclaimable = reclaimable
+                order.append("estimated")
+            case .finished:
+                order.append("finished")
+            default:
+                break
             }
             if let item { sizesSeen.append(item.bytes) }
         }
         #expect(item?.usage?.bytes ?? 0 >= 100_000)
         #expect(item?.reclaimable == .bytes(42))
         #expect(sizesSeen.allSatisfy { $0 == 0 || $0 == 42 }, "\(sizesSeen)")
+        // The slow tool holds up neither the measurement nor the end of the scan.
+        #expect(order == ["measured", "finished", "estimated"])
     }
 }

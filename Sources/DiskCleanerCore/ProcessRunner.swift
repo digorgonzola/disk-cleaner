@@ -107,18 +107,22 @@ public actor Shell {
     public static let shared = Shell()
 
     private var cachedPath: String?
-    private var pathLookup: Task<String?, Never>?
+    private var pathLookup: Task<String, Never>?
+
+    /// - Parameter path: A fixed PATH instead of the login shell's, for tests.
+    public init(path: String? = nil) {
+        cachedPath = path
+    }
 
     private func loginPath() async -> String {
         if let cachedPath { return cachedPath }
-        // One lookup for all callers. Detached, so a stopped scan does not cut it short.
-        let lookup = pathLookup ?? Task.detached { await Shell.readLoginPath() }
-        pathLookup = lookup
-        guard let path = await lookup.value else {
-            // Not cached: a later command tries again rather than run without the user's tools.
-            pathLookup = nil
-            return "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        // One lookup for all callers. Detached, so a stopped scan cannot cut it short and
+        // leave the fallback cached.
+        let lookup = pathLookup ?? Task.detached {
+            await Shell.readLoginPath() ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         }
+        pathLookup = lookup
+        let path = await lookup.value
         cachedPath = path
         return path
     }

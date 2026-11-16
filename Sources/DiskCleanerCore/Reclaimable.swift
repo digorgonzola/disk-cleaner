@@ -10,7 +10,8 @@ public enum Reclaimable: Sendable, Hashable {
     case unknown(reason: String)
 }
 
-/// Asks a tool how much its clean command can free.
+/// Asks a tool how much its clean command can free. For rules with one home path: the
+/// answer is for the whole tool, so a second path would count it twice.
 public struct ReclaimableQuery: Sendable {
     /// Prints one `<label>=<size>` line per kind of data, such as `system df` with a format.
     /// Text after the size, such as "(45%)", is ignored. Start it with `exec`, so that
@@ -29,10 +30,10 @@ public struct ReclaimableQuery: Sendable {
 
     /// - Returns: `nil` when the task is cancelled. There is then no new answer, and the
     ///   caller keeps the one it has.
-    public func estimate() async -> Reclaimable? {
+    public func estimate(shell: Shell = .shared) async -> Reclaimable? {
         let output: ProcessOutput
         do {
-            output = try await Shell.shared.run(command, timeout: Self.timeout)
+            output = try await shell.run(command, timeout: Self.timeout)
         } catch {
             return Task.isCancelled ? nil : .unknown(reason: error.localizedDescription)
         }
@@ -54,7 +55,9 @@ public struct ReclaimableQuery: Sendable {
             let sizeText = line[line.index(after: separator)...].split(separator: " ").first.map(String.init) ?? ""
             guard let size = Self.bytes(sizeText) else { continue }
             sizesRead += 1
-            if !excludedLabels.contains(label) { total += size }
+            guard !excludedLabels.contains(label) else { continue }
+            let (sum, overflow) = total.addingReportingOverflow(size)
+            total = overflow ? .max : sum
         }
         return sizesRead > 0 ? .bytes(total) : .unknown(reason: "the tool's answer was not a size")
     }
@@ -66,6 +69,6 @@ public struct ReclaimableQuery: Sendable {
     static func bytes(_ text: String) -> Int64? {
         let number = text.prefix { $0.isASCII && ($0.isNumber || $0 == ".") }
         guard let value = Double(number), let scale = unitScale[String(text.dropFirst(number.count))] else { return nil }
-        return Int64((value * scale).rounded())
+        return Int64(exactly: (value * scale).rounded())
     }
 }

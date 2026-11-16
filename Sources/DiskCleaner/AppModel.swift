@@ -56,6 +56,9 @@ final class AppModel {
     private static let staleDays: [RuleCategory: Double] = [.worktrees: 14]
     private static let defaultStaleDays = 30.0
     private var scanTask: Task<Void, Never>?
+    /// Identifies the newest scan, so a stopped one cannot change the items of the next.
+    private var scanID = UUID()
+    private var reestimates: [String: Task<Void, Never>] = [:]
     private var cleanTask: Task<Void, Never>?
 
     init() {
@@ -87,33 +90,57 @@ final class AppModel {
     func stopScan() { scanTask?.cancel() }
 
     private func scan() async {
+        let id = UUID()
+        scanID = id
+        reestimates.values.forEach { $0.cancel() }
+        reestimates = [:]
         items = [:]
         selection = []
         measuredCount = 0
         isScanning = true
         volume = DiskUsage.volumeSpace()
         defer {
-            isScanning = false
-            hasScanned = true
+            if scanID == id {
+                isScanning = false
+                hasScanned = true
+            }
         }
 
         let stream = Scanner(projectRoots: projectRoots).scan()
         var pending: [ScanEvent] = []
         var lastFlush = Date()
         for await event in stream {
+            guard scanID == id else { return }
             pending.append(event)
             // Apply in batches so thousands of size updates do not re-render the list each time.
-            // New locations are applied at once: the next event can be minutes away.
-            let isDiscovery = if case .discovered = event { true } else { false }
-            if isDiscovery || Date().timeIntervalSince(lastFlush) > 0.25 {
+            // New locations and the end of measuring are applied at once: the next event can
+            // be minutes away.
+            switch event {
+            case .discovered, .finished:
                 apply(pending)
                 pending.removeAll()
                 lastFlush = Date()
+            default:
+                if Date().timeIntervalSince(lastFlush) > 0.25 {
+                    apply(pending)
+                    pending.removeAll()
+                    lastFlush = Date()
+                }
+            }
+            if case .finished = event, !Task.isCancelled {
+                // Tool estimates can still arrive; they do not hold up cleaning.
+                isScanning = false
+                hasScanned = true
+                selection = Set(items.values.filter(isSelectedByDefault).map(\.path))
             }
         }
+        guard scanID == id else { return }
         apply(pending)
-        guard !Task.isCancelled else { return }
-        selection = Set(items.values.filter(isSelectedByDefault).map(\.path))
+        if Task.isCancelled {
+            for (path, item) in items where item.reclaimable == .pending {
+                items[path]?.reclaimable = .unknown(reason: "the scan was stopped")
+            }
+        }
     }
 
     private func apply(_ events: [ScanEvent]) {
@@ -334,11 +361,12 @@ final class AppModel {
     /// half a minute.
     private func reestimate(_ queries: [(path: String, query: ReclaimableQuery)]) {
         for (path, query) in queries {
-            Task { [weak self] in
-                // Detached: a stopped clean must not turn into an "unknown" answer.
-                let answer = await Task.detached(priority: .utility) { await query.estimate() }.value
-                guard let self, self.items[path]?.reclaimable == .pending else { return }
-                self.items[path]?.reclaimable = answer ?? .unknown(reason: "the check was stopped")
+            // A newer clean replaces the older question, so an old answer cannot win.
+            reestimates[path]?.cancel()
+            reestimates[path] = Task { [weak self] in
+                guard let answer = await query.estimate() else { return }
+                self?.items[path]?.reclaimable = answer
+                self?.reestimates[path] = nil
             }
         }
     }
