@@ -301,11 +301,18 @@ final class AppModel {
         isMeasuringCleanSizes = true
         let commandPaths = toClean.filter { rulesByID[$0.ruleID]?.cleanCommand != nil }.map(\.path)
         let fresh = await Self.measure(commandPaths)
+        isMeasuringCleanSizes = false
+        // Stop while measuring: nothing was cleaned yet, so close the sheet's work here.
+        guard !Task.isCancelled else {
+            isCleaning = false
+            return
+        }
         var sizesBefore: [String: Int64] = [:]
         for item in toClean { sizesBefore[item.path] = fresh[item.path] ?? item.usage?.bytes ?? 0 }
-        availableAtCleanStart = DiskUsage.volumeSpace()?.available
-        volume = DiskUsage.volumeSpace()
-        isMeasuringCleanSizes = false
+        // The volume query can block, so it stays off the main actor.
+        let start = await Task.detached { DiskUsage.volumeSpace() }.value
+        volume = start
+        availableAtCleanStart = start?.available
 
         // The cleaner reports from many tasks at once. Collect outcomes off the main actor
         // and publish them a few times a second: one list update per item made big cleans
