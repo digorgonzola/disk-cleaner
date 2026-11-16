@@ -4,6 +4,9 @@ public enum ScanEvent: Sendable {
     case discovered([ScanItem])
     case measured(path: String, usage: Usage)
     case worktreeInspected(path: String, info: WorktreeInfo)
+    case estimated(path: String, reclaimable: Reclaimable)
+    /// Every location is found and measured. `.estimated` events can still follow, until
+    /// the stream ends.
     case finished
 }
 
@@ -12,17 +15,20 @@ public struct Scanner: Sendable {
     public let projectRoots: [String]
     public let rules: [CleanupRule]
     public let concurrency: Int
+    public let shell: Shell
 
     public init(
         homePath: String = NSHomeDirectory(),
         projectRoots: [String],
         rules: [CleanupRule] = RuleCatalog.all,
-        concurrency: Int = 8
+        concurrency: Int = 8,
+        shell: Shell = .shared
     ) {
         self.homePath = homePath
         self.projectRoots = projectRoots
         self.rules = rules
         self.concurrency = concurrency
+        self.shell = shell
     }
 
     public static let defaultProjectRootNames = [
@@ -41,6 +47,8 @@ public struct Scanner: Sendable {
             let task = Task.detached(priority: .userInitiated) {
                 let fixed = homePathItems()
                 continuation.yield(.discovered(fixed))
+                // A tool can take half a minute to answer, so it runs beside the rest of the scan.
+                async let estimates: Void = estimate(fixed, continuation)
                 let found = await projectItems()
                 continuation.yield(.discovered(found))
 
@@ -48,6 +56,7 @@ public struct Scanner: Sendable {
                 // Measure fixed caches first: few, often large, and quick to show.
                 await measure(fixed + found, continuation)
                 continuation.yield(.finished)
+                await estimates
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -62,7 +71,7 @@ public struct Scanner: Sendable {
             return relative
                 .map { (homePath as NSString).appendingPathComponent($0) }
                 .filter { FileManager.default.fileExists(atPath: $0) }
-                .map { ScanItem(ruleID: rule.id, path: $0) }
+                .map { ScanItem(ruleID: rule.id, path: $0, reclaimable: rule.reclaimable == nil ? nil : .pending) }
         }
     }
 
@@ -95,6 +104,15 @@ public struct Scanner: Sendable {
         await forEachConcurrently(items, width: concurrency) { item in
             let usage = DiskUsage.usage(of: item.path, protectedNames: protected[item.ruleID] ?? [])
             continuation.yield(.measured(path: item.path, usage: usage))
+        }
+    }
+
+    private func estimate(_ items: [ScanItem], _ continuation: AsyncStream<ScanEvent>.Continuation) async {
+        let queries = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.reclaimable.map { (rule.id, $0) } })
+        let asking = items.compactMap { item in queries[item.ruleID].map { (item.path, $0) } }
+        await forEachConcurrently(asking, width: concurrency) { path, query in
+            guard let reclaimable = await query.estimate(shell: shell) else { return }
+            continuation.yield(.estimated(path: path, reclaimable: reclaimable))
         }
     }
 

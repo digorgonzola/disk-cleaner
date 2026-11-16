@@ -386,6 +386,7 @@ struct RuleHeader: View {
                     if let blocker = item.blocker {
                         Label(blocker, systemImage: "lock.fill").font(.caption).foregroundStyle(.red)
                     }
+                    ReclaimableNote(item: item).font(.caption)
                 }
             }
             Spacer(minLength: 12)
@@ -404,6 +405,32 @@ struct RuleHeader: View {
 }
 
 // MARK: Rows
+
+/// For a rule whose tool estimates what cleaning frees: that estimate against the folder size.
+struct ReclaimableNote: View {
+    let item: ScanItem
+
+    var body: some View {
+        switch item.reclaimable {
+        case .pending:
+            Label("Asking the tool what cleaning can free…", systemImage: "hourglass")
+                .foregroundStyle(.secondary)
+        case .bytes(let bytes):
+            let image = item.usage.map { " of the \(Format.bytes($0.bytes)) disk image" } ?? ""
+            Label(bytes == 0 ? "The tool reports nothing to free" + (item.usage.map { " in the \(Format.bytes($0.bytes)) disk image" } ?? "")
+                             : "Can free about \(Format.bytes(bytes))" + image,
+                  systemImage: "internaldrive")
+                .foregroundStyle(.secondary)
+        case .unknown(let reason):
+            let text = "Cannot tell what cleaning frees: \(reason)"
+            Label(text, systemImage: "questionmark.circle")
+                .foregroundStyle(.orange)
+                .help(text)
+        case nil:
+            EmptyView()
+        }
+    }
+}
 
 struct ItemRow: View {
     @Environment(AppModel.self) private var model
@@ -442,8 +469,8 @@ struct ItemRow: View {
                 .frame(width: 64, alignment: .trailing)
                 .help("Newest file inside was modified then")
             Group {
-                if let usage = item.usage {
-                    Text(Format.bytes(usage.bytes))
+                if item.usage != nil, item.reclaimable != .pending {
+                    Text(Format.bytes(item.bytes))
                 } else {
                     ProgressView().controlSize(.mini)
                 }
@@ -460,7 +487,7 @@ struct ItemRow: View {
     @ViewBuilder
     private var statusLine: some View {
         let branch = item.worktree?.branch
-        if branch != nil || item.blocker != nil || item.warning != nil {
+        if branch != nil || item.blocker != nil || item.warning != nil || item.reclaimable != nil {
             HStack(spacing: 8) {
                 if let branch {
                     Label(branch, systemImage: "arrow.triangle.branch")
@@ -476,6 +503,7 @@ struct ItemRow: View {
                         .foregroundStyle(.orange)
                         .help(warning)
                 }
+                ReclaimableNote(item: item)
             }
             .font(.caption)
             .lineLimit(1)

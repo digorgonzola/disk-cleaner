@@ -56,6 +56,9 @@ final class AppModel {
     private static let staleDays: [RuleCategory: Double] = [.worktrees: 14]
     private static let defaultStaleDays = 30.0
     private var scanTask: Task<Void, Never>?
+    /// Identifies the newest scan, so a stopped one cannot change the items of the next.
+    private var scanID = UUID()
+    private var reestimates: [String: Task<Void, Never>] = [:]
     private var cleanTask: Task<Void, Never>?
 
     init() {
@@ -87,33 +90,57 @@ final class AppModel {
     func stopScan() { scanTask?.cancel() }
 
     private func scan() async {
+        let id = UUID()
+        scanID = id
+        reestimates.values.forEach { $0.cancel() }
+        reestimates = [:]
         items = [:]
         selection = []
         measuredCount = 0
         isScanning = true
         volume = DiskUsage.volumeSpace()
         defer {
-            isScanning = false
-            hasScanned = true
+            if scanID == id {
+                isScanning = false
+                hasScanned = true
+            }
         }
 
         let stream = Scanner(projectRoots: projectRoots).scan()
         var pending: [ScanEvent] = []
         var lastFlush = Date()
         for await event in stream {
+            guard scanID == id else { return }
             pending.append(event)
             // Apply in batches so thousands of size updates do not re-render the list each time.
-            // New locations are applied at once: the next event can be minutes away.
-            let isDiscovery = if case .discovered = event { true } else { false }
-            if isDiscovery || Date().timeIntervalSince(lastFlush) > 0.25 {
+            // New locations and the end of measuring are applied at once: the next event can
+            // be minutes away.
+            switch event {
+            case .discovered, .finished:
                 apply(pending)
                 pending.removeAll()
                 lastFlush = Date()
+            default:
+                if Date().timeIntervalSince(lastFlush) > 0.25 {
+                    apply(pending)
+                    pending.removeAll()
+                    lastFlush = Date()
+                }
+            }
+            if case .finished = event, !Task.isCancelled {
+                // Tool estimates can still arrive; they do not hold up cleaning.
+                isScanning = false
+                hasScanned = true
+                selection = Set(items.values.filter(isSelectedByDefault).map(\.path))
             }
         }
+        guard scanID == id else { return }
         apply(pending)
-        guard !Task.isCancelled else { return }
-        selection = Set(items.values.filter(isSelectedByDefault).map(\.path))
+        if Task.isCancelled {
+            for (path, item) in items where item.reclaimable == .pending {
+                items[path]?.reclaimable = .unknown(reason: "the scan was stopped")
+            }
+        }
     }
 
     private func apply(_ events: [ScanEvent]) {
@@ -129,6 +156,8 @@ final class AppModel {
                 measuredCount += 1
             case .worktreeInspected(let path, let info):
                 items[path]?.worktree = info
+            case .estimated(let path, let reclaimable):
+                items[path]?.reclaimable = reclaimable
             case .finished:
                 break
             }
@@ -322,7 +351,24 @@ final class AppModel {
             return true
         }
         for (path, usage) in measured { updated[path]?.usage = usage }
+        let queries = cleaned.compactMap { item in rulesByID[item.ruleID]?.reclaimable.map { (item.path, $0) } }
+        for (path, _) in queries { updated[path]?.reclaimable = .pending }
         items = updated
+        reestimate(queries)
+    }
+
+    /// Asks the tools again without holding up the end of the clean: `system df` can take
+    /// half a minute.
+    private func reestimate(_ queries: [(path: String, query: ReclaimableQuery)]) {
+        for (path, query) in queries {
+            // A newer clean replaces the older question, so an old answer cannot win.
+            reestimates[path]?.cancel()
+            reestimates[path] = Task { [weak self] in
+                guard let answer = await query.estimate() else { return }
+                self?.items[path]?.reclaimable = answer
+                self?.reestimates[path] = nil
+            }
+        }
     }
 }
 

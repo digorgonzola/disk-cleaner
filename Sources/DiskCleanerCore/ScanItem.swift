@@ -33,15 +33,27 @@ public struct ScanItem: Identifiable, Sendable, Hashable {
     public let path: String
     public var usage: Usage?
     public var worktree: WorktreeInfo?
+    /// Set for rules with a `reclaimableCommand`; replaces the folder size in `bytes`.
+    public var reclaimable: Reclaimable?
 
-    public init(ruleID: String, path: String, usage: Usage? = nil, worktree: WorktreeInfo? = nil) {
+    public init(
+        ruleID: String, path: String, usage: Usage? = nil, worktree: WorktreeInfo? = nil, reclaimable: Reclaimable? = nil
+    ) {
         self.ruleID = ruleID
         self.path = path
         self.usage = usage
         self.worktree = worktree
+        self.reclaimable = reclaimable
     }
 
-    public var bytes: Int64 { usage?.bytes ?? 0 }
+    /// What cleaning frees: the tool's estimate when the rule has one, else the folder size.
+    public var bytes: Int64 {
+        switch reclaimable {
+        case .bytes(let bytes): bytes
+        case .pending, .unknown: 0
+        case nil: usage?.bytes ?? 0
+        }
+    }
 
     /// Why the app will not clean this item, if anything stops it.
     public var blocker: String? {
@@ -62,6 +74,7 @@ public struct ScanItem: Identifiable, Sendable, Hashable {
 
     public static func == (lhs: ScanItem, rhs: ScanItem) -> Bool {
         lhs.path == rhs.path && lhs.usage == rhs.usage && lhs.worktree == rhs.worktree
+            && lhs.reclaimable == rhs.reclaimable
     }
 
     public func hash(into hasher: inout Hasher) { hasher.combine(path) }

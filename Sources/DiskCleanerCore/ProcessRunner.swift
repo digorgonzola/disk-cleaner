@@ -107,19 +107,34 @@ public actor Shell {
     public static let shared = Shell()
 
     private var cachedPath: String?
+    private var pathLookup: Task<String, Never>?
+
+    /// - Parameter path: A fixed PATH instead of the login shell's, for tests.
+    public init(path: String? = nil) {
+        cachedPath = path
+    }
 
     private func loginPath() async -> String {
         if let cachedPath { return cachedPath }
-        let fallback = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        // One lookup for all callers. Detached, so a stopped scan cannot cut it short and
+        // leave the fallback cached.
+        let lookup = pathLookup ?? Task.detached {
+            await Shell.readLoginPath() ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        }
+        pathLookup = lookup
+        let path = await lookup.value
+        cachedPath = path
+        return path
+    }
+
+    private static func readLoginPath() async -> String? {
         // -i loads .zshrc, where nvm and pyenv usually add to PATH. Banners and prompts may
         // print first, so take the last line only.
-        let output = try? await ProcessRunner.run("/bin/zsh", ["-lic", "print -r -- \"$PATH\""], timeout: .seconds(15))
-        let path = output?.stdout
-            .split(separator: "\n").last.map(String.init)?
-            .trimmingCharacters(in: .whitespaces)
-        let resolved = (path?.contains("/") == true) ? path! : fallback
-        cachedPath = resolved
-        return resolved
+        guard let output = try? await ProcessRunner.run("/bin/zsh", ["-lic", "print -r -- \"$PATH\""], timeout: .seconds(15)),
+              !output.timedOut
+        else { return nil }
+        let path = output.stdout.split(separator: "\n").last.map(String.init)?.trimmingCharacters(in: .whitespaces)
+        return path?.contains("/") == true ? path : nil
     }
 
     private func environment() async -> [String: String] {

@@ -666,3 +666,128 @@ struct UpdateCheckerTests {
         #expect(!UpdateChecker.isUpdate(latest, current: Version("0.1.1")!, skipped: Version("0.2.0")))
     }
 }
+
+struct ReclaimableTests {
+    let query = ReclaimableQuery(command: "", excludedLabels: ["Local Volumes"])
+
+    func output(_ stdout: String, status: Int32 = 0, stderr: String = "", timedOut: Bool = false) -> ProcessOutput {
+        ProcessOutput(status: status, stdout: stdout, stderr: stderr, timedOut: timedOut)
+    }
+
+    @Test func parsesSizesAndLeavesOutExcludedLabels() {
+        #expect(query.parse(output("Images=510825984\nContainers=0\nLocal Volumes=11732066549\n")) == .bytes(510_825_984))
+        #expect(query.parse(output("Images=1.5GB (45%)\nContainers=0B (0%)\nLocal Volumes=3GB (100%)\nBuild Cache=512kB\n"))
+            == .bytes(1_500_512_000))
+        #expect(query.parse(output("banner\n")) == .unknown(reason: "the tool's answer was not a size"))
+        #expect(query.parse(output("Images=lots\n")) == .unknown(reason: "the tool's answer was not a size"))
+        // Untrusted output must not crash the app.
+        #expect(query.parse(output("Images=99999999999999999999\n")) == .unknown(reason: "the tool's answer was not a size"))
+        #expect(query.parse(output("Images=9000000000000000000\nContainers=9000000000000000000\n")) == .bytes(.max))
+    }
+
+    @Test func queriesAreOnSinglePathHomeRules() {
+        for rule in RuleCatalog.all where rule.reclaimable != nil {
+            guard case .homePaths(let paths) = rule.target else {
+                Issue.record("\(rule.id): a query needs a home path rule")
+                continue
+            }
+            #expect(paths.count == 1, "\(rule.id)")
+        }
+    }
+
+    @Test func failuresGiveTheReason() {
+        #expect(query.parse(output("", status: 125, stderr: "Error: cannot connect to Podman\n"))
+            == .unknown(reason: "Error: cannot connect to Podman"))
+        #expect(query.parse(output("Images=1", status: 15, timedOut: true)) == .unknown(reason: "the tool did not answer in time"))
+    }
+
+    @Test func itemSizeIsTheEstimateWhenThereIsOne() {
+        var item = ScanItem(ruleID: "podman", path: "/x", usage: Usage(bytes: 50_000, lastModified: nil, protectedFiles: []))
+        #expect(item.bytes == 50_000)
+        item.reclaimable = .pending
+        #expect(item.bytes == 0)
+        item.reclaimable = .bytes(1_000)
+        #expect(item.bytes == 1_000)
+        item.reclaimable = .unknown(reason: "stopped")
+        #expect(item.bytes == 0)
+    }
+
+    /// Runs a rule's query with fake tools that print what the real ones print.
+    func estimate(_ ruleID: String, tools: [String: String]) async throws -> Reclaimable {
+        let bin = FileManager.default.temporaryDirectory.appendingPathComponent("dc-tools-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: bin) }
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        for (name, script) in tools {
+            let url = bin.appendingPathComponent(name)
+            try ("#!/bin/sh\n" + script).write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        let rule = try #require(RuleCatalog.all.first { $0.id == ruleID })
+        let query = try #require(rule.reclaimable)
+        let output = try await ProcessRunner.run("/bin/zsh", ["-c", query.command],
+                                                 environment: ["HOME": bin.path, "PATH": bin.path + ":/usr/bin:/bin"])
+        return query.parse(output)
+    }
+
+    @Test func podmanQueryLeavesOutVolumes() async throws {
+        // The fake prints its arguments' format back, so a changed format string fails here.
+        let podman = """
+        [ "$*" = "system df --format {{.Type}}={{.RawReclaimable}}" ] || { echo "unexpected: $*" >&2; exit 2; }
+        printf 'Images=510825984\\nContainers=0\\nLocal Volumes=11732066549\\n'
+        """
+        #expect(try await estimate("podman", tools: ["podman": podman]) == .bytes(510_825_984))
+    }
+
+    @Test func dockerQueryReadsDecimalUnits() async throws {
+        let docker = """
+        [ "$*" = "--context desktop-linux system df --format {{.Type}}={{.Reclaimable}}" ] || { echo "unexpected: $*" >&2; exit 2; }
+        printf 'Images=1.5GB (45%%)\\nContainers=0B (0%%)\\nLocal Volumes=3GB (100%%)\\nBuild Cache=512kB\\n'
+        """
+        #expect(try await estimate("docker-desktop", tools: ["docker": docker]) == .bytes(1_500_512_000))
+    }
+
+    @Test func stoppedMachineGivesNoEstimate() async throws {
+        let podman = "echo 'Error: unable to connect to Podman socket' >&2; exit 125"
+        #expect(try await estimate("podman", tools: ["podman": podman])
+            == .unknown(reason: "Error: unable to connect to Podman socket"))
+    }
+
+    @Test func scanNeverCountsTheDiskImageBeforeTheToolAnswers() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("dc-vm-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let disk = home.appendingPathComponent("vm/disk.raw")
+        try FileManager.default.createDirectory(at: disk.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(count: 100_000).write(to: disk)
+        let rule = CleanupRule(
+            id: "vm", name: "VM", category: .containers, detail: "", target: .homePaths(["vm"]),
+            cleanCommand: "true", canDeleteWithoutCommand: false,
+            reclaimable: ReclaimableQuery(command: "sleep 1; exec /bin/echo 'Images=42'"))
+
+        var item: ScanItem?
+        var sizesSeen: [Int64] = []
+        var order: [String] = []
+        let scanner = Scanner(homePath: home.path, projectRoots: [], rules: [rule], shell: Shell(path: "/usr/bin:/bin"))
+        for await event in scanner.scan() {
+            switch event {
+            case .discovered(let found):
+                item = found.first ?? item
+            case .measured(_, let usage):
+                item?.usage = usage
+                order.append("measured")
+            case .estimated(_, let reclaimable):
+                item?.reclaimable = reclaimable
+                order.append("estimated")
+            case .finished:
+                order.append("finished")
+            default:
+                break
+            }
+            if let item { sizesSeen.append(item.bytes) }
+        }
+        #expect(item?.usage?.bytes ?? 0 >= 100_000)
+        #expect(item?.reclaimable == .bytes(42))
+        #expect(sizesSeen.allSatisfy { $0 == 0 || $0 == 42 }, "\(sizesSeen)")
+        // The slow tool holds up neither the measurement nor the end of the scan.
+        #expect(order == ["measured", "finished", "estimated"])
+    }
+}

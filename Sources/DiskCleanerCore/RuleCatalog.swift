@@ -166,16 +166,20 @@ public enum RuleCatalog {
     static let containers: [CleanupRule] = [
         CleanupRule(
             id: "podman", name: "Podman machine", category: .containers,
-            detail: "The Podman VM disk image. Cleaning runs `podman system prune --all` (unused images, stopped containers, build cache; volumes are kept), then `fstrim` so the host gets the space back. The machine must be running.",
+            detail: "The Podman VM disk image. Cleaning runs `podman system prune --all` (unused images, stopped containers, build cache), then `fstrim` so the host gets the space back. The size shown is about what `podman system df` says the prune can free, not the disk image. Volumes are kept: check them with `podman volume ls`. The machine must be running.",
             risk: .caution, target: .homePaths([".local/share/containers/podman/machine"]),
             cleanCommand: "podman system prune --all --force && podman machine ssh -- sudo fstrim -av",
-            canDeleteWithoutCommand: false),
+            canDeleteWithoutCommand: false,
+            reclaimable: ReclaimableQuery(command: "exec podman system df --format '{{.Type}}={{.RawReclaimable}}'",
+                                          excludedLabels: ["Local Volumes"])),
         CleanupRule(
             id: "docker-desktop", name: "Docker Desktop", category: .containers,
-            detail: "The Docker Desktop VM disk. Cleaning runs `docker system prune --all` against the desktop-linux context: stopped containers, unused images and networks, build cache. Volumes are kept.",
+            detail: "The Docker Desktop VM disk. Cleaning runs `docker system prune --all` against the desktop-linux context: stopped containers, unused images and networks, build cache. The size shown is about what `docker system df` says the prune can free, not the disk image. Volumes are kept. Docker Desktop must be running.",
             risk: .caution, target: .homePaths(["Library/Containers/com.docker.docker/Data/vms"]),
             cleanCommand: "docker --context desktop-linux system prune --all --force",
-            canDeleteWithoutCommand: false),
+            canDeleteWithoutCommand: false,
+            reclaimable: ReclaimableQuery(command: "exec docker --context desktop-linux system df --format '{{.Type}}={{.Reclaimable}}'",
+                                          excludedLabels: ["Local Volumes"])),
     ]
 
     static let testing: [CleanupRule] = [
