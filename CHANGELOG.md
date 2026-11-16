@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/digorgonzola/disk-cleaner/compare/v0.1.0...v0.1.1) (2026-11-16)
+
+
+### Performance Improvements
+
+* **cleaner:** clean items in parallel through a purge area ([#8](https://github.com/digorgonzola/disk-cleaner/issues/8)) ([5a1e97e](https://github.com/digorgonzola/disk-cleaner/commit/5a1e97e388d4a3634316da5042e8f0d909f5f974))
+
 ## 0.1.0 (2026-11-16)
 
 
