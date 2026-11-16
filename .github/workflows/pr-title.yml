@@ -18,7 +18,7 @@ jobs:
   pr-title:
     # The check name that required-checks.yml waits for.
     name: PR title
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 2
     steps:
       # The title goes through env, never into the script, so a title cannot inject shell.
