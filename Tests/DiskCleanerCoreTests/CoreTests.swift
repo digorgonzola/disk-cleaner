@@ -53,6 +53,30 @@ struct CatalogTests {
             #expect(paths.allSatisfy { !$0.hasPrefix("/") && !$0.contains("..") }, "\(rule.id)")
         }
     }
+
+    @Test func trashCommandEmptiesOnlyTheTrash() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("dc-trash-\(UUID().uuidString)")
+        defer {
+            runTool("/usr/bin/chflags", ["-R", "nouchg", home.path])
+            try? FileManager.default.removeItem(at: home)
+        }
+        let trash = home.appendingPathComponent(".Trash")
+        for path in [".Trash/file.txt", ".Trash/.hidden", ".Trash/folder/nested/a.txt", ".Trash/locked.txt", "keep.txt"] {
+            let url = home.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "x".write(to: url, atomically: true, encoding: .utf8)
+        }
+        runTool("/usr/bin/chflags", ["uchg", trash.appendingPathComponent("locked.txt").path])
+
+        let rule = try #require(RuleCatalog.all.first { $0.id == "trash" })
+        let command = try #require(rule.cleanCommand)
+        let output = try await ProcessRunner.run("/bin/zsh", ["-c", command], environment: ["HOME": home.path, "PATH": "/usr/bin:/bin"])
+
+        #expect(output.succeeded, "\(output.stderr)")
+        #expect(FileManager.default.fileExists(atPath: trash.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: trash.path).isEmpty)
+        #expect(FileManager.default.fileExists(atPath: home.appendingPathComponent("keep.txt").path))
+    }
 }
 
 struct ScannerTests {
