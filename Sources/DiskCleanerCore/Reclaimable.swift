@@ -14,8 +14,7 @@ public enum Reclaimable: Sendable, Hashable {
 /// answer is for the whole tool, so a second path would count it twice.
 public struct ReclaimableQuery: Sendable {
     /// Prints one `<label>=<size>` line per kind of data, such as `system df` with a format.
-    /// Text after the size, such as "(45%)", is ignored. Start it with `exec`, so that
-    /// stopping the shell stops the tool.
+    /// Text after the size, such as "(45%)", is ignored.
     public let command: String
     /// Labels of the data the clean keeps, such as volumes.
     public let excludedLabels: Set<String>

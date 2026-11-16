@@ -41,8 +41,15 @@ final class AppModel {
     /// Outcomes a clean reports when nothing fails; the progress total.
     var expectedOutcomes = 0
     /// Growth of the volume's free space since the clean started. APFS can release blocks
-    /// late, and other apps write at the same time, so it can lag or be negative.
-    var freedBytes: Int64?
+    /// late, and other apps write at the same time, so it can lag or be negative. It follows
+    /// `volume`, so it keeps updating after the clean.
+    var freedBytes: Int64? {
+        guard let start = availableAtCleanStart, let now = volume?.available else { return nil }
+        return now - start
+    }
+    private var availableAtCleanStart: Int64?
+    /// Measuring folder sizes before or after a clean, so the sheet does not look stuck.
+    var isMeasuringCleanSizes = false
     /// How much smaller the cleaned folders are on disk, measured before and after.
     var removedBytes: Int64?
     var cleaningLabel: String?
@@ -287,10 +294,18 @@ final class AppModel {
         isCleaning = true
         outcomes = []
         expectedOutcomes = cleaner.expectedOutcomeCount(toClean)
-        freedBytes = 0
         removedBytes = nil
-        let before = DiskUsage.volumeSpace()?.available
-        let sizesBefore = PathOverlap.outermost(toClean.map(\.path)).map { ($0, items[$0]?.usage?.bytes ?? 0) }
+        availableAtCleanStart = nil
+        // Folders a tool cleans survive the clean, and the scan's size can be hours old, so
+        // measure them again. Folders that are deleted cannot have shrunk since the scan.
+        isMeasuringCleanSizes = true
+        let commandPaths = toClean.filter { rulesByID[$0.ruleID]?.cleanCommand != nil }.map(\.path)
+        let fresh = await Self.measure(commandPaths)
+        var sizesBefore: [String: Int64] = [:]
+        for item in toClean { sizesBefore[item.path] = fresh[item.path] ?? item.usage?.bytes ?? 0 }
+        availableAtCleanStart = DiskUsage.volumeSpace()?.available
+        volume = DiskUsage.volumeSpace()
+        isMeasuringCleanSizes = false
 
         // The cleaner reports from many tasks at once. Collect outcomes off the main actor
         // and publish them a few times a second: one list update per item made big cleans
@@ -299,27 +314,29 @@ final class AppModel {
         let publisher = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
-                await self?.publish(buffer.drain(), freedSince: before)
+                await self?.publish(buffer.drain())
             }
         }
         await cleaner.clean(toClean) { outcome in buffer.append(outcome) }
         publisher.cancel()
-        await publish(buffer.drain(), freedSince: before)
+        await publish(buffer.drain())
 
+        isMeasuringCleanSizes = true
         await refresh(toClean)
         // Disk usage, not `bytes`: for a VM rule that is the estimate, and the disk image
         // shrinking is what the clean really freed.
-        removedBytes = sizesBefore.reduce(0) { total, entry in
-            total + max(entry.1 - (items[entry.0]?.usage?.bytes ?? 0), 0)
+        let sizesAfter = sizesBefore.keys.reduce(into: [String: Int64]()) { sizes, path in
+            if let bytes = items[path]?.usage?.bytes { sizes[path] = bytes }
         }
+        removedBytes = CleanReport.removedBytes(before: sizesBefore, after: sizesAfter)
+        isMeasuringCleanSizes = false
         cleaningLabel = nil
         isCleaning = false
     }
 
-    private func publish(_ batch: [CleanOutcome], freedSince before: Int64?) async {
+    private func publish(_ batch: [CleanOutcome]) async {
         // The volume query can block, so it stays off the main actor.
         volume = await Task.detached { DiskUsage.volumeSpace() }.value
-        if let before, let after = volume?.available { freedBytes = after - before }
         guard !batch.isEmpty else { return }
         outcomes += batch
         cleaningLabel = batch.last?.label
@@ -329,6 +346,20 @@ final class AppModel {
 
     func startClean() {
         cleanTask = Task { await clean() }
+    }
+
+    /// Folder sizes, measured off the main actor.
+    private static func measure(_ paths: [String]) async -> [String: Int64] {
+        await Task.detached(priority: .userInitiated) {
+            await withTaskGroup(of: (String, Int64).self) { group in
+                for path in paths where FileManager.default.fileExists(atPath: path) {
+                    group.addTask { (path, DiskUsage.usage(of: path, protectedNames: []).bytes) }
+                }
+                var sizes: [String: Int64] = [:]
+                for await (path, bytes) in group { sizes[path] = bytes }
+                return sizes
+            }
+        }.value
     }
 
     /// Re-measures only what was cleaned, instead of a full rescan that can take minutes.

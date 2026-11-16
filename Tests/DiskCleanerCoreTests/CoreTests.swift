@@ -687,18 +687,29 @@ struct ReclaimableTests {
         return query.parse(output)
     }
 
-    @Test func podmanQueryLeavesOutVolumes() async throws {
-        // The fake prints its arguments' format back, so a changed format string fails here.
-        // The journal line comes from inside the VM; the fake answers like the VM's shell.
+    /// A fake podman: `machine ssh -- <script>` runs the script as the VM's shell would, with
+    /// fake `sudo` and `du`, so the real remote script is under test.
+    func podmanTools(journalBytes: Int64) -> [String: String] {
         let podman = """
         case "$1 $2" in
-          "machine ssh") echo Journal=4434042624 ;;
+          "machine ssh") [ "$3" = -- ] && [ $# -eq 4 ] || { echo "unexpected: $*" >&2; exit 2; }
+                         sh -c "$4" ;;
           "system df") [ "$*" = "system df --format {{.Type}}={{.RawReclaimable}}" ] || { echo "unexpected: $*" >&2; exit 2; }
                        printf 'Images=510825984\\nContainers=0\\nLocal Volumes=11732066549\\n' ;;
           *) echo "unexpected: $*" >&2; exit 2 ;;
         esac
         """
-        #expect(try await estimate("podman", tools: ["podman": podman]) == .bytes(510_825_984 + 4_434_042_624))
+        let du = """
+        [ "$*" = "-s --block-size=1 /var/log/journal" ] || { echo "unexpected du: $*" >&2; exit 2; }
+        printf '\(journalBytes)\\t/var/log/journal\\n'
+        """
+        return ["podman": podman, "sudo": "exec \"$@\"", "du": du]
+    }
+
+    @Test func podmanQueryAddsTheJournalAndLeavesOutVolumes() async throws {
+        #expect(try await estimate("podman", tools: podmanTools(journalBytes: 4_538_900_224))
+            == .bytes(510_825_984 + 4_538_900_224 - 104_857_600))
+        #expect(try await estimate("podman", tools: podmanTools(journalBytes: 50_000_000)) == .bytes(510_825_984))
     }
 
     @Test func dockerQueryReadsDecimalUnits() async throws {
@@ -752,5 +763,27 @@ struct ReclaimableTests {
         #expect(sizesSeen.allSatisfy { $0 == 0 || $0 == 42 }, "\(sizesSeen)")
         // The slow tool holds up neither the measurement nor the end of the scan.
         #expect(order == ["measured", "finished", "estimated"])
+    }
+}
+
+struct CleanReportTests {
+    @Test func countsWhatLeftTheDisk() {
+        let before: [String: Int64] = ["/h/a": 100, "/h/a/node_modules": 60, "/h/b": 50, "/h/vm": 1_000, "/h/grew": 10]
+        // a is gone (with its nested folder); b is gone; the VM image shrank; grew got bigger.
+        let after: [String: Int64] = ["/h/vm": 400, "/h/grew": 30]
+        #expect(CleanReport.removedBytes(before: before, after: after) == 100 + 50 + 600)
+    }
+}
+
+struct ProcessTreeTests {
+    @Test func timeoutStopsChildrenOfTheShell() async throws {
+        // A unique duration marks this test's processes.
+        let marker = "47.\(Int.random(in: 100_000...999_999))"
+        let output = try await ProcessRunner.run("/bin/zsh", ["-c", "/bin/sleep \(marker) && exec /bin/sleep 1"],
+                                                 timeout: .milliseconds(500))
+        #expect(output.timedOut)
+        try await Task.sleep(for: .milliseconds(300))
+        let check = try await ProcessRunner.run("/usr/bin/pgrep", ["-f", "sleep \(marker)"])
+        #expect(check.stdout.isEmpty, "sleep \(marker) is still running: \(check.stdout)")
     }
 }
