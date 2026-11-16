@@ -40,7 +40,11 @@ final class AppModel {
     var outcomes: [CleanOutcome] = []
     /// Outcomes a clean reports when nothing fails; the progress total.
     var expectedOutcomes = 0
+    /// Growth of the volume's free space since the clean started. APFS can release blocks
+    /// late, and other apps write at the same time, so it can lag or be negative.
     var freedBytes: Int64?
+    /// How much smaller the cleaned folders are on disk, measured before and after.
+    var removedBytes: Int64?
     var cleaningLabel: String?
 
     var projectRoots: [String] {
@@ -284,7 +288,9 @@ final class AppModel {
         outcomes = []
         expectedOutcomes = cleaner.expectedOutcomeCount(toClean)
         freedBytes = 0
+        removedBytes = nil
         let before = DiskUsage.volumeSpace()?.available
+        let sizesBefore = PathOverlap.outermost(toClean.map(\.path)).map { ($0, items[$0]?.usage?.bytes ?? 0) }
 
         // The cleaner reports from many tasks at once. Collect outcomes off the main actor
         // and publish them a few times a second: one list update per item made big cleans
@@ -301,6 +307,11 @@ final class AppModel {
         await publish(buffer.drain(), freedSince: before)
 
         await refresh(toClean)
+        // Disk usage, not `bytes`: for a VM rule that is the estimate, and the disk image
+        // shrinking is what the clean really freed.
+        removedBytes = sizesBefore.reduce(0) { total, entry in
+            total + max(entry.1 - (items[entry.0]?.usage?.bytes ?? 0), 0)
+        }
         cleaningLabel = nil
         isCleaning = false
     }
