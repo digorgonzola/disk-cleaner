@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/digorgonzola/disk-cleaner/compare/v0.1.1...v0.2.0) (2026-11-16)
+
+
+### Features
+
+* **updates:** notify when a newer release is available ([#11](https://github.com/digorgonzola/disk-cleaner/issues/11)) ([1b7907b](https://github.com/digorgonzola/disk-cleaner/commit/1b7907b5c633147f0b06af880f5983da8a32af51))
+
 ## [0.1.1](https://github.com/digorgonzola/disk-cleaner/compare/v0.1.0...v0.1.1) (2026-11-16)
 
 
