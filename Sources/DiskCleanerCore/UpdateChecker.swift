@@ -49,8 +49,8 @@ public enum UpdateCheckError: LocalizedError, Equatable {
 }
 
 /// Reads the latest GitHub release. Everything in the response is untrusted: the version
-/// must be a plain `vX.Y.Z` tag, and the app only ever opens https links on github.com
-/// under this repository's releases.
+/// must be a plain `vX.Y.Z` tag, and the links are built from that version, never taken
+/// from the response.
 public enum UpdateChecker {
     public static let repository = "digorgonzola/disk-cleaner"
     static let latestReleaseURL = URL(string: "https://api.github.com/repos/\(repository)/releases/latest")!
@@ -58,7 +58,10 @@ public enum UpdateChecker {
 
     /// - Throws: `UpdateCheckError` for a non-200 answer or a release that fails validation,
     ///   and `URLError` when the network request fails.
-    public static func fetchLatest(appVersion: String, session: URLSession = .shared) async throws -> ReleaseInfo {
+    /// Ephemeral: no cookies or cache, so the request carries nothing beyond its headers.
+    public static let session = URLSession(configuration: .ephemeral)
+
+    public static func fetchLatest(appVersion: String, session: URLSession = UpdateChecker.session) async throws -> ReleaseInfo {
         var request = URLRequest(url: latestReleaseURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
@@ -71,16 +74,13 @@ public enum UpdateChecker {
     }
 
     /// - Throws: `UpdateCheckError.invalidRelease` when the JSON is malformed, the release is
-    ///   a draft or pre-release, the tag is not `vX.Y.Z`, or a link points outside the
-    ///   repository's releases.
+    ///   a draft or pre-release, or the tag is not `vX.Y.Z`.
     public static func parse(_ data: Data) throws -> ReleaseInfo {
         struct Asset: Decodable {
             let name: String
-            let browser_download_url: String
         }
         struct Release: Decodable {
             let tag_name: String
-            let html_url: String
             let draft: Bool
             let prerelease: Bool
             let body: String?
@@ -97,10 +97,14 @@ public enum UpdateChecker {
         guard let version = Version(release.tag_name), release.tag_name.hasPrefix("v") else {
             throw UpdateCheckError.invalidRelease("tag \(release.tag_name.prefix(40)) is not vX.Y.Z")
         }
-        guard let page = trustedURL(release.html_url) else { throw UpdateCheckError.invalidRelease("release page link") }
-
+        // Build the links from the validated version rather than trusting html_url or
+        // browser_download_url. The response only decides whether the zip exists.
+        let base = "https://github.com/\(repository)/releases"
+        let page = URL(string: "\(base)/tag/v\(version)")!
         let zipName = "DiskCleaner-\(version).zip"
-        let download = release.assets.first { $0.name == zipName }.flatMap { trustedURL($0.browser_download_url) }
+        let download = release.assets.contains { $0.name == zipName }
+            ? URL(string: "\(base)/download/v\(version)/\(zipName)")
+            : nil
         return ReleaseInfo(version: version, pageURL: page, downloadURL: download, notes: release.body ?? "")
     }
 
@@ -111,6 +115,7 @@ public enum UpdateChecker {
               components.scheme == "https",
               components.host == "github.com",
               components.user == nil, components.password == nil, components.port == nil,
+              components.query == nil, components.fragment == nil,
               components.path.hasPrefix(releasesPathPrefix),
               !components.path.contains("/../")
         else { return nil }

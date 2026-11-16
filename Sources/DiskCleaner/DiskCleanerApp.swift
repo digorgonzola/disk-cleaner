@@ -20,8 +20,7 @@ struct DiskCleanerApp: App {
         }
         .commands {
             CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") { Task { await updater.check(userInitiated: true) } }
-                    .disabled(updater.isChecking)
+                CheckForUpdatesButton(updater: updater)
             }
             CommandGroup(after: .newItem) {
                 Button("Scan") { model.startScan() }
@@ -45,9 +44,27 @@ struct DiskCleanerApp: App {
     }
 }
 
+/// Opens the main window first, so the result alert has somewhere to show.
+struct CheckForUpdatesButton: View {
+    let updater: Updater
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Check for Updates…") {
+            openWindow(id: DiskCleanerApp.mainWindowID)
+            Task { await updater.checkNow(showingResultIn: .window) }
+        }
+        .disabled(updater.isChecking)
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    // Set before launch finishes, so a notification click that launches the app is handled.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        if Updater.canNotify { UNUserNotificationCenter.current().delegate = self }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        UNUserNotificationCenter.current().delegate = self
         // Needed when started with `swift run` rather than from the .app bundle.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()

@@ -24,7 +24,7 @@ struct MenuBarContent: View {
 
     var body: some View {
         if let release = updater.available {
-            Button("Download Disk Cleaner \(release.version)…") { updater.openDownload() }
+            Button("Download Disk Cleaner \(release.version.description)…") { updater.openDownload() }
             Divider()
         }
         if let volume = model.volume {
@@ -63,8 +63,17 @@ struct SettingsView: View {
                     .help("Asks GitHub for the latest release at launch and once a day. Nothing else is sent.")
                 Spacer()
                 Text("Version \(updater.currentVersion ?? "unknown")").foregroundStyle(.secondary)
-                Button("Check Now") { Task { await updater.check(userInitiated: true) } }
+                Button("Check Now") { Task { await updater.checkNow(showingResultIn: .settings) } }
                     .disabled(updater.isChecking)
+            }
+            if updater.isChecking {
+                Text("Checking…").font(.caption).foregroundStyle(.secondary)
+            } else if updater.manualResultPlace == .settings, let result = updater.manualResult {
+                Text(result).font(.caption).foregroundStyle(.secondary)
+            } else if updater.manualResultPlace == .settings, let release = updater.available {
+                Button("Disk Cleaner \(release.version.description) is available. Download…") { updater.openDownload() }
+                    .buttonStyle(.link)
+                    .font(.caption)
             }
         }
         .padding([.horizontal, .top], 20)

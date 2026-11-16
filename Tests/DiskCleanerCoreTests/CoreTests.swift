@@ -587,16 +587,33 @@ struct UpdateCheckerTests {
         #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(release(tag: "v0.2.0-rc1")) }
         #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(release(draft: true)) }
         #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(release(prerelease: true)) }
-        #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(release(page: "https://evil.example/disk-cleaner/releases/tag/v0.2.0")) }
-        #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(release(page: "http://github.com/digorgonzola/disk-cleaner/releases/tag/v0.2.0")) }
         #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(Data("not json".utf8)) }
     }
 
-    @Test func dropsAnUntrustedDownloadLinkButKeepsThePage() throws {
-        let info = try UpdateChecker.parse(release(asset: "https://github.com/someone-else/fork/releases/download/v0.2.0/DiskCleaner-0.2.0.zip"))
+    @Test func linksComeFromTheVersionNotTheResponse() throws {
+        let info = try UpdateChecker.parse(release(
+            page: "https://evil.example/disk-cleaner/releases/tag/v0.2.0",
+            asset: "https://evil.example/DiskCleaner-0.2.0.zip"
+        ))
+        #expect(info.pageURL.absoluteString == "https://github.com/digorgonzola/disk-cleaner/releases/tag/v0.2.0")
+        #expect(info.downloadURL?.absoluteString == "https://github.com/digorgonzola/disk-cleaner/releases/download/v0.2.0/DiskCleaner-0.2.0.zip")
+    }
+
+    @Test func noZipMeansNoDownloadLink() throws {
+        let json = #"{"tag_name":"v0.2.0","draft":false,"prerelease":false,"body":null,"assets":[]}"#
+        let info = try UpdateChecker.parse(Data(json.utf8))
         #expect(info.downloadURL == nil)
+        #expect(info.pageURL.absoluteString.hasSuffix("/releases/tag/v0.2.0"))
+    }
+
+    @Test func notificationLinksMustStayInTheReleases() {
+        let releases = "https://github.com/digorgonzola/disk-cleaner/releases/"
+        #expect(UpdateChecker.trustedURL(releases + "tag/v0.2.0") != nil)
         #expect(UpdateChecker.trustedURL("https://user@github.com/digorgonzola/disk-cleaner/releases/x") == nil)
-        #expect(UpdateChecker.trustedURL("https://github.com/digorgonzola/disk-cleaner/releases/../../evil") == nil)
+        #expect(UpdateChecker.trustedURL(releases + "../../evil") == nil)
+        #expect(UpdateChecker.trustedURL(releases + "tag/v0.2.0?u=https://evil.example") == nil)
+        #expect(UpdateChecker.trustedURL(releases + "tag/v0.2.0#@evil.example") == nil)
+        #expect(UpdateChecker.trustedURL("http://github.com/digorgonzola/disk-cleaner/releases/x") == nil)
     }
 
     @Test func updateLogicRespectsCurrentAndSkippedVersions() throws {

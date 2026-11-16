@@ -84,7 +84,10 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingResults) { ResultsView() }
         .alert(
             "Software Update",
-            isPresented: Binding(get: { updater.manualResult != nil }, set: { if !$0 { updater.manualResult = nil } })
+            isPresented: Binding(
+                get: { updater.manualResultPlace == .window && updater.manualResult != nil },
+                set: { if !$0 { updater.manualResult = nil } }
+            )
         ) {
             Button("OK") { updater.manualResult = nil }
         } message: {

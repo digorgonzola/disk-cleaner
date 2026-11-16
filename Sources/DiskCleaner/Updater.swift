@@ -13,8 +13,15 @@ final class Updater {
     /// The newer release, when there is one the user has not skipped.
     private(set) var available: ReleaseInfo?
     private(set) var isChecking = false
-    /// Set after a check the user started, for the "up to date" or error alert.
+    /// Where the result of a check the user started is shown.
+    enum ResultPlace { case window, settings }
+
+    /// Set after a check the user started: "up to date", or the error.
     var manualResult: String?
+    private(set) var manualResultPlace: ResultPlace = .window
+
+    /// UserNotifications needs an app bundle; under `swift run` it throws.
+    static let canNotify = Bundle.main.bundleIdentifier != nil
 
     let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
 
@@ -34,10 +41,11 @@ final class Updater {
     init() {
         checksAutomatically = UserDefaults.standard.object(forKey: Keys.automatic) as? Bool ?? true
         Task { [weak self] in
-            // Give launch a moment, then check whenever a day has passed.
+            // Give launch a moment, then wake hourly and check when one is due.
             try? await Task.sleep(for: .seconds(5))
             while !Task.isCancelled {
-                await self?.checkIfDue()
+                guard let self else { return }
+                await self.checkIfDue()
                 try? await Task.sleep(for: .seconds(60 * 60))
             }
         }
@@ -45,27 +53,36 @@ final class Updater {
 
     private var current: Version? { currentVersion.flatMap(Version.init) }
 
-    /// Once per launch, then once a day. One request a day stays far below GitHub's limit of
-    /// 60 unauthenticated requests an hour.
+    /// Once per launch, then once a day after a successful check; a failed one (offline at
+    /// login) is retried at the next hourly wake. Far below GitHub's 60 unauthenticated
+    /// requests an hour.
     private func checkIfDue() async {
         guard checksAutomatically, current != nil else { return }
-        if let lastAutomaticCheck, Date().timeIntervalSince(lastAutomaticCheck) < Self.interval { return }
-        lastAutomaticCheck = Date()
+        if let lastSuccessfulCheck, Date().timeIntervalSince(lastSuccessfulCheck) < Self.interval { return }
         await check(userInitiated: false)
     }
 
-    private var lastAutomaticCheck: Date?
+    private var lastSuccessfulCheck: Date?
 
-    func check(userInitiated: Bool) async {
+    /// Runs a check the user asked for and shows its result in `place`.
+    func checkNow(showingResultIn place: ResultPlace) async {
+        manualResultPlace = place
+        await check(userInitiated: true)
+    }
+
+    private func check(userInitiated: Bool) async {
         guard !isChecking else { return }
         guard let current, let currentVersion else {
-            if userInitiated { manualResult = "This build has no version number, so it cannot be compared with releases." }
+            if userInitiated {
+                manualResult = "This build's version (\(currentVersion ?? "none")) is not a release version, so it cannot be compared with releases."
+            }
             return
         }
         isChecking = true
         defer { isChecking = false }
         do {
             let latest = try await UpdateChecker.fetchLatest(appVersion: currentVersion)
+            lastSuccessfulCheck = Date()
             // A version the user skipped still shows when they ask explicitly.
             let skipped = userInitiated ? nil : UserDefaults.standard.string(forKey: Keys.skipped).flatMap(Version.init)
             if UpdateChecker.isUpdate(latest, current: current, skipped: skipped) {
@@ -102,6 +119,7 @@ final class Updater {
 
     /// One system notification per new version; the banner and menu item cover the rest.
     private func notifyOnce(_ release: ReleaseInfo) {
+        guard Self.canNotify else { return }
         let version = release.version.description
         guard UserDefaults.standard.string(forKey: Keys.notified) != version else { return }
         UserDefaults.standard.set(version, forKey: Keys.notified)
@@ -146,7 +164,7 @@ struct UpdateBanner: View {
                 .font(.title2)
                 .foregroundStyle(Color.accentColor)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Disk Cleaner \(release.version) is available").font(.headline)
+                Text("Disk Cleaner \(release.version.description) is available").font(.headline)
                 Text("You have \(updater.currentVersion ?? "an unknown version").").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
