@@ -84,3 +84,7 @@ folder found inside projects. Run `make test`.
   the size shown.
 - Measuring `~/.Trash` and some `~/Library` folders needs Full Disk Access for
   the app (System Settings → Privacy & Security → Full Disk Access).
+
+## Licence
+
+Apache License 2.0. See [LICENSE](LICENSE).
