@@ -64,8 +64,20 @@ struct ResultsView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                 Spacer()
-                if let freed = model.freedBytes {
-                    Text("\(Format.bytes(max(freed, 0))) freed").font(.title3.monospacedDigit()).foregroundStyle(.green)
+                if let removed = model.removedBytes {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(removed > 0 ? "\(Format.bytes(removed)) removed" : "Nothing removed")
+                            .font(.title3.monospacedDigit())
+                            .foregroundStyle(removed > 0 ? .green : .secondary)
+                        if let freed = model.freedBytes {
+                            Text(freed > 0 ? "Free space up \(Format.bytes(freed)) so far" : "Free space not up yet")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .help("APFS can release blocks late, and other apps write at the same time.")
+                        }
+                    }
+                } else if let freed = model.freedBytes, freed > 0 {
+                    Text("\(Format.bytes(freed)) freed so far").font(.title3.monospacedDigit()).foregroundStyle(.green)
                 }
             }
             if model.isCleaning {
