@@ -24,6 +24,19 @@ xattr -dr com.apple.quarantine "/Applications/Disk Cleaner.app"
 
 Each release lists a SHA-256 checksum for the zip.
 
+### Updates
+
+At launch and once a day, the app asks GitHub for the latest release
+(`api.github.com/repos/digorgonzola/disk-cleaner/releases/latest`). Nothing else
+is sent. When a newer version exists, a banner in the window and an item in the
+menu bar menu link to the download, and macOS shows one notification for that
+version. **Skip This Version** hides it until the next release. Turn the check
+off in **Settings** (⌘,), or check now with **Disk Cleaner → Check for
+Updates…**.
+
+The app only opens https links on github.com under this repository's releases,
+and only accepts plain `vX.Y.Z` release tags.
+
 ## Build from source
 
 ```bash

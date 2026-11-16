@@ -550,3 +550,60 @@ func runTool(_ path: String, _ arguments: [String]) {
     try? process.run()
     process.waitUntilExit()
 }
+
+struct UpdateCheckerTests {
+    func release(tag: String = "v0.2.0", page: String? = nil, asset: String? = nil,
+                 draft: Bool = false, prerelease: Bool = false) -> Data {
+        let page = page ?? "https://github.com/digorgonzola/disk-cleaner/releases/tag/\(tag)"
+        let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+        let asset = asset ?? "https://github.com/digorgonzola/disk-cleaner/releases/download/\(tag)/DiskCleaner-\(version).zip"
+        let json: [String: Any] = [
+            "tag_name": tag, "html_url": page, "draft": draft, "prerelease": prerelease, "body": "notes",
+            "assets": [
+                ["name": "DiskCleaner-\(version).zip", "browser_download_url": asset],
+                ["name": "DiskCleaner-\(version).zip.sha256", "browser_download_url": asset + ".sha256"],
+            ],
+        ]
+        return try! JSONSerialization.data(withJSONObject: json)
+    }
+
+    @Test func versionsParseAndCompare() {
+        #expect(Version("v1.2.3") == Version("1.2.3"))
+        #expect(Version("0.10.0")! > Version("0.9.9")!)
+        #expect(Version("1.2") == nil)
+        #expect(Version("1.2.3-beta") == nil)
+        #expect(Version("1.٢.3") == nil) // non-ASCII digits
+    }
+
+    @Test func parsesAValidRelease() throws {
+        let info = try UpdateChecker.parse(release())
+        #expect(info.version == Version("0.2.0"))
+        #expect(info.pageURL.absoluteString == "https://github.com/digorgonzola/disk-cleaner/releases/tag/v0.2.0")
+        #expect(info.downloadURL?.absoluteString == "https://github.com/digorgonzola/disk-cleaner/releases/download/v0.2.0/DiskCleaner-0.2.0.zip")
+    }
+
+    @Test func rejectsUntrustedOrOddReleases() {
+        #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(release(tag: "0.2.0")) }
+        #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(release(tag: "v0.2.0-rc1")) }
+        #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(release(draft: true)) }
+        #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(release(prerelease: true)) }
+        #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(release(page: "https://evil.example/disk-cleaner/releases/tag/v0.2.0")) }
+        #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(release(page: "http://github.com/digorgonzola/disk-cleaner/releases/tag/v0.2.0")) }
+        #expect(throws: UpdateCheckError.self) { try UpdateChecker.parse(Data("not json".utf8)) }
+    }
+
+    @Test func dropsAnUntrustedDownloadLinkButKeepsThePage() throws {
+        let info = try UpdateChecker.parse(release(asset: "https://github.com/someone-else/fork/releases/download/v0.2.0/DiskCleaner-0.2.0.zip"))
+        #expect(info.downloadURL == nil)
+        #expect(UpdateChecker.trustedURL("https://user@github.com/digorgonzola/disk-cleaner/releases/x") == nil)
+        #expect(UpdateChecker.trustedURL("https://github.com/digorgonzola/disk-cleaner/releases/../../evil") == nil)
+    }
+
+    @Test func updateLogicRespectsCurrentAndSkippedVersions() throws {
+        let latest = try UpdateChecker.parse(release(tag: "v0.2.0"))
+        #expect(UpdateChecker.isUpdate(latest, current: Version("0.1.1")!, skipped: nil))
+        #expect(!UpdateChecker.isUpdate(latest, current: Version("0.2.0")!, skipped: nil))
+        #expect(!UpdateChecker.isUpdate(latest, current: Version("0.3.0")!, skipped: nil))
+        #expect(!UpdateChecker.isUpdate(latest, current: Version("0.1.1")!, skipped: Version("0.2.0")))
+    }
+}

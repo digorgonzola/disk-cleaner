@@ -7,7 +7,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 APP="build/Disk Cleaner.app"
 # --tags: tags made on the GitHub release page are lightweight. Strip the "v" for the plist.
-VERSION="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
+# VERSION=0.0.9 overrides it, for example to test the update banner against a real release.
+if [[ -z "${VERSION:-}" ]]; then
+  VERSION="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
+fi
 VERSION="${VERSION#v}"
 # Monotonic along main, as macOS expects CFBundleVersion to grow.
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"

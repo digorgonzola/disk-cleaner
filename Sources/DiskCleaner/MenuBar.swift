@@ -19,9 +19,14 @@ struct MenuBarLabel: View {
 
 struct MenuBarContent: View {
     @Environment(AppModel.self) private var model
+    @Environment(Updater.self) private var updater
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        if let release = updater.available {
+            Button("Download Disk Cleaner \(release.version)…") { updater.openDownload() }
+            Divider()
+        }
         if let volume = model.volume {
             Text("\(Format.bytes(volume.available)) free of \(Format.bytes(volume.total))")
         }
@@ -47,12 +52,22 @@ struct MenuBarContent: View {
 
 struct SettingsView: View {
     @AppStorage("showMenuBarExtra") private var showsMenuBarExtra = true
+    @Environment(Updater.self) private var updater
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        @Bindable var updater = updater
+        VStack(alignment: .leading, spacing: 8) {
             Toggle("Show free space in the menu bar", isOn: $showsMenuBarExtra)
-                .padding([.horizontal, .top], 20)
-            ProjectRootsView()
+            HStack {
+                Toggle("Check for updates automatically", isOn: $updater.checksAutomatically)
+                    .help("Asks GitHub for the latest release at launch and once a day. Nothing else is sent.")
+                Spacer()
+                Text("Version \(updater.currentVersion ?? "unknown")").foregroundStyle(.secondary)
+                Button("Check Now") { Task { await updater.check(userInitiated: true) } }
+                    .disabled(updater.isChecking)
+            }
         }
+        .padding([.horizontal, .top], 20)
+        ProjectRootsView()
     }
 }
