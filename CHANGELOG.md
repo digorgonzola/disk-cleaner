@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/digorgonzola/disk-cleaner/compare/v0.2.1...v0.3.0) (2026-11-16)
+
+
+### Features
+
+* **rules:** shrink the Podman VM journal and show the removed size ([#17](https://github.com/digorgonzola/disk-cleaner/issues/17)) ([70d59c0](https://github.com/digorgonzola/disk-cleaner/commit/70d59c078897c9aa3147a0eb7d2382a27fb34a51))
+
 ## [0.2.1](https://github.com/digorgonzola/disk-cleaner/compare/v0.2.0...v0.2.1) (2026-11-16)
 
 
