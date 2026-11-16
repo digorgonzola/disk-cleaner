@@ -261,9 +261,13 @@ public enum RuleCatalog {
             risk: .caution, target: .homePaths(["Library/Logs"])),
         CleanupRule(
             id: "trash", name: "Trash", category: .system,
-            detail: "Files already in the Trash. Emptied through Finder, which asks once for permission. Needs Full Disk Access to measure.",
+            detail: "Files already in the Trash of your home folder. Deleted directly, including locked items. Needs Full Disk Access.",
             risk: .caution, target: .homePaths([".Trash"]),
-            cleanCommand: "osascript -e 'tell application \"Finder\" to empty trash'",
+            // Not Finder's `empty trash`: it fails with -128 when one Trash entry points to a
+            // volume that is gone, and it also empties other volumes' Trash, which the scan
+            // does not measure. The .Trash folder itself stays, because macOS owns it. Absolute
+            // paths: GNU tools from Homebrew can come first in PATH and follow symlinks differently.
+            cleanCommand: "/usr/bin/chflags -R nouchg,nouappnd \"$HOME/.Trash\" 2>/dev/null; /bin/chmod -R u+w \"$HOME/.Trash\" 2>/dev/null; /usr/bin/find \"$HOME/.Trash\" -mindepth 1 -maxdepth 1 -exec /bin/rm -rf {} +",
             canDeleteWithoutCommand: false),
     ]
 

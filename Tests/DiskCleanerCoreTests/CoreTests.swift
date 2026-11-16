@@ -53,6 +53,48 @@ struct CatalogTests {
             #expect(paths.allSatisfy { !$0.hasPrefix("/") && !$0.contains("..") }, "\(rule.id)")
         }
     }
+
+    @Test func trashCommandEmptiesOnlyTheTrash() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("dc-trash-\(UUID().uuidString)")
+        defer {
+            runTool("/usr/bin/chflags", ["-R", "nouchg", home.path])
+            try? FileManager.default.removeItem(at: home)
+        }
+        let trash = home.appendingPathComponent(".Trash")
+        let files = [".Trash/file.txt", ".Trash/.hidden", ".Trash/folder/nested/a.txt", ".Trash/locked.txt",
+                     ".Trash/appendonly.txt", ".Trash/lockedfolder/a.txt", ".Trash/readonly/a.txt",
+                     "keep.txt", "outside/locked.txt"]
+        for path in files {
+            let url = home.appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "x".write(to: url, atomically: true, encoding: .utf8)
+        }
+        let outsideFile = home.appendingPathComponent("outside/locked.txt").path
+        runTool("/bin/chmod", ["0444", outsideFile])
+        runTool("/usr/bin/chflags", ["uchg", outsideFile])
+        runTool("/usr/bin/chflags", ["uchg", trash.appendingPathComponent("locked.txt").path])
+        runTool("/usr/bin/chflags", ["uappnd", trash.appendingPathComponent("appendonly.txt").path])
+        runTool("/usr/bin/chflags", ["uchg", trash.appendingPathComponent("lockedfolder").path])
+        runTool("/bin/chmod", ["0555", trash.appendingPathComponent("readonly").path])
+        // Links out of the Trash: the command must remove the links, never their targets.
+        try FileManager.default.createSymbolicLink(atPath: trash.appendingPathComponent("link-file").path,
+                                                   withDestinationPath: home.appendingPathComponent("keep.txt").path)
+        try FileManager.default.createSymbolicLink(atPath: trash.appendingPathComponent("link-dir").path,
+                                                   withDestinationPath: home.appendingPathComponent("outside").path)
+
+        let rule = try #require(RuleCatalog.all.first { $0.id == "trash" })
+        let command = try #require(rule.cleanCommand)
+        let output = try await ProcessRunner.run("/bin/zsh", ["-c", command], environment: ["HOME": home.path, "PATH": "/usr/bin:/bin"])
+
+        #expect(output.succeeded, "\(output.stderr)")
+        #expect(FileManager.default.fileExists(atPath: trash.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: trash.path).isEmpty)
+        #expect(FileManager.default.fileExists(atPath: home.appendingPathComponent("keep.txt").path))
+        var info = stat()
+        #expect(lstat(outsideFile, &info) == 0)
+        #expect(info.st_flags & UInt32(UF_IMMUTABLE) != 0, "the link target was unlocked")
+        #expect(info.st_mode & 0o777 == 0o444, "the link target was made writable")
+    }
 }
 
 struct ScannerTests {

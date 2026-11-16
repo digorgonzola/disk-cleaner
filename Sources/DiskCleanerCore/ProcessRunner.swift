@@ -125,6 +125,8 @@ public actor Shell {
     private func environment() async -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = await loginPath()
+        // Commands such as the Trash rule act on $HOME; it must be the folder the scan measured.
+        env["HOME"] = NSHomeDirectory()
         return env
     }
 
