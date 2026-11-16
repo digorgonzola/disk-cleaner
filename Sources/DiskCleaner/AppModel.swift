@@ -298,11 +298,6 @@ final class AppModel {
         selection.subtract(cleaned.map(\.path))
         let remaining = cleaned.filter { FileManager.default.fileExists(atPath: $0.path) }
             .map { ($0.path, rulesByID[$0.ruleID]?.protectedFileNames ?? []) }
-        var estimates: [String: Reclaimable] = [:]
-        for item in cleaned {
-            guard let command = rulesByID[item.ruleID]?.reclaimableCommand else { continue }
-            estimates[item.path] = await Reclaimable.estimate(command)
-        }
 
         let measured = await Task.detached(priority: .userInitiated) {
             await withTaskGroup(of: (String, Usage).self) { group in
@@ -329,8 +324,23 @@ final class AppModel {
             return true
         }
         for (path, usage) in measured { updated[path]?.usage = usage }
-        for (path, reclaimable) in estimates { updated[path]?.reclaimable = reclaimable }
+        let queries = cleaned.compactMap { item in rulesByID[item.ruleID]?.reclaimable.map { (item.path, $0) } }
+        for (path, _) in queries { updated[path]?.reclaimable = .pending }
         items = updated
+        reestimate(queries)
+    }
+
+    /// Asks the tools again without holding up the end of the clean: `system df` can take
+    /// half a minute.
+    private func reestimate(_ queries: [(path: String, query: ReclaimableQuery)]) {
+        for (path, query) in queries {
+            Task { [weak self] in
+                // Detached: a stopped clean must not turn into an "unknown" answer.
+                let answer = await Task.detached(priority: .utility) { await query.estimate() }.value
+                guard let self, self.items[path]?.reclaimable == .pending else { return }
+                self.items[path]?.reclaimable = answer ?? .unknown(reason: "the check was stopped")
+            }
+        }
     }
 }
 

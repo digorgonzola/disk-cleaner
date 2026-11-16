@@ -2,22 +2,6 @@ import Foundation
 
 /// Every location the scanner knows about. Add a new cache here; the UI picks it up.
 public enum RuleCatalog {
-    /// Sums the reclaimable column of a `system df` command that prints "<size> <type>" lines,
-    /// leaving out volumes, which the prune keeps. Podman prints bytes; Docker prints sizes
-    /// such as "1.2GB (45%)" in decimal units.
-    static func reclaimableExceptVolumes(_ dfCommand: String) -> String {
-        "setopt pipefail; " + dfCommand + #"""
-         | /usr/bin/awk '/Local Volumes/ { next }
-        match($1, /^[0-9.]+/) {
-          unit = substr($1, RLENGTH + 1); scale = 1
-          if (unit == "kB" || unit == "KB") scale = 1e3; else if (unit == "MB") scale = 1e6
-          else if (unit == "GB") scale = 1e9; else if (unit == "TB") scale = 1e12
-          sum += substr($1, 1, RLENGTH) * scale
-        }
-        END { printf "%.0f\n", sum }'
-        """#
-    }
-
     public static let all: [CleanupRule] = worktrees + projectArtifacts + packageManagers
         + infrastructure + containers + testing + editors + browsers + system + reviewOnly
 
@@ -182,18 +166,20 @@ public enum RuleCatalog {
     static let containers: [CleanupRule] = [
         CleanupRule(
             id: "podman", name: "Podman machine", category: .containers,
-            detail: "The Podman VM disk image. Cleaning runs `podman system prune --all` (unused images, stopped containers, build cache), then `fstrim` so the host gets the space back. The size shown is what `podman system df` says the prune can free, not the disk image. Volumes are kept: check them with `podman volume ls`. The machine must be running.",
+            detail: "The Podman VM disk image. Cleaning runs `podman system prune --all` (unused images, stopped containers, build cache), then `fstrim` so the host gets the space back. The size shown is about what `podman system df` says the prune can free, not the disk image. Volumes are kept: check them with `podman volume ls`. The machine must be running.",
             risk: .caution, target: .homePaths([".local/share/containers/podman/machine"]),
             cleanCommand: "podman system prune --all --force && podman machine ssh -- sudo fstrim -av",
             canDeleteWithoutCommand: false,
-            reclaimableCommand: RuleCatalog.reclaimableExceptVolumes("podman system df --format '{{.RawReclaimable}} {{.Type}}'")),
+            reclaimable: ReclaimableQuery(command: "exec podman system df --format '{{.Type}}={{.RawReclaimable}}'",
+                                          excludedLabels: ["Local Volumes"])),
         CleanupRule(
             id: "docker-desktop", name: "Docker Desktop", category: .containers,
-            detail: "The Docker Desktop VM disk. Cleaning runs `docker system prune --all` against the desktop-linux context: stopped containers, unused images and networks, build cache. The size shown is what `docker system df` says the prune can free, not the disk image. Volumes are kept. Docker Desktop must be running.",
+            detail: "The Docker Desktop VM disk. Cleaning runs `docker system prune --all` against the desktop-linux context: stopped containers, unused images and networks, build cache. The size shown is about what `docker system df` says the prune can free, not the disk image. Volumes are kept. Docker Desktop must be running.",
             risk: .caution, target: .homePaths(["Library/Containers/com.docker.docker/Data/vms"]),
             cleanCommand: "docker --context desktop-linux system prune --all --force",
             canDeleteWithoutCommand: false,
-            reclaimableCommand: RuleCatalog.reclaimableExceptVolumes("docker --context desktop-linux system df --format '{{.Reclaimable}} {{.Type}}'")),
+            reclaimable: ReclaimableQuery(command: "exec docker --context desktop-linux system df --format '{{.Type}}={{.Reclaimable}}'",
+                                          excludedLabels: ["Local Volumes"])),
     ]
 
     static let testing: [CleanupRule] = [

@@ -64,9 +64,9 @@ public struct CleanupRule: Identifiable, Sendable {
     /// When `false`, a missing clean-command tool is an error instead of a reason to delete.
     /// Use it where the path is live data that only the tool may touch (a VM disk image).
     public let canDeleteWithoutCommand: Bool
-    /// Prints the bytes the clean command can free, as an integer on the last line. The app
-    /// shows that instead of the folder size, which for a VM disk image includes data in use.
-    public let reclaimableCommand: String?
+    /// Asks the tool what the clean command can free. The app shows that instead of the
+    /// folder size, which for a VM disk image includes data in use.
+    public let reclaimable: ReclaimableQuery?
     /// Report the size but never clean it from the app.
     public let isReportOnly: Bool
     /// File names that block the clean when found inside an item (e.g. local Terraform state).
@@ -81,7 +81,7 @@ public struct CleanupRule: Identifiable, Sendable {
         target: RuleTarget,
         cleanCommand: String? = nil,
         canDeleteWithoutCommand: Bool = true,
-        reclaimableCommand: String? = nil,
+        reclaimable: ReclaimableQuery? = nil,
         isReportOnly: Bool = false,
         protectedFileNames: Set<String> = []
     ) {
@@ -93,7 +93,7 @@ public struct CleanupRule: Identifiable, Sendable {
         self.target = target
         self.cleanCommand = cleanCommand
         self.canDeleteWithoutCommand = canDeleteWithoutCommand
-        self.reclaimableCommand = reclaimableCommand
+        self.reclaimable = reclaimable
         self.isReportOnly = isReportOnly
         self.protectedFileNames = protectedFileNames
     }

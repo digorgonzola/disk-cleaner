@@ -36,18 +36,21 @@ public struct ScanItem: Identifiable, Sendable, Hashable {
     /// Set for rules with a `reclaimableCommand`; replaces the folder size in `bytes`.
     public var reclaimable: Reclaimable?
 
-    public init(ruleID: String, path: String, usage: Usage? = nil, worktree: WorktreeInfo? = nil) {
+    public init(
+        ruleID: String, path: String, usage: Usage? = nil, worktree: WorktreeInfo? = nil, reclaimable: Reclaimable? = nil
+    ) {
         self.ruleID = ruleID
         self.path = path
         self.usage = usage
         self.worktree = worktree
+        self.reclaimable = reclaimable
     }
 
     /// What cleaning frees: the tool's estimate when the rule has one, else the folder size.
     public var bytes: Int64 {
         switch reclaimable {
         case .bytes(let bytes): bytes
-        case .unknown: 0
+        case .pending, .unknown: 0
         case nil: usage?.bytes ?? 0
         }
     }

@@ -42,12 +42,15 @@ public struct Scanner: Sendable {
             let task = Task.detached(priority: .userInitiated) {
                 let fixed = homePathItems()
                 continuation.yield(.discovered(fixed))
+                // A tool can take half a minute to answer, so it runs beside the rest of the scan.
+                async let estimates: Void = estimate(fixed, continuation)
                 let found = await projectItems()
                 continuation.yield(.discovered(found))
 
                 await inspectWorktrees(found.filter { $0.ruleID == "claude-worktrees" }, continuation)
                 // Measure fixed caches first: few, often large, and quick to show.
                 await measure(fixed + found, continuation)
+                await estimates
                 continuation.yield(.finished)
                 continuation.finish()
             }
@@ -63,7 +66,7 @@ public struct Scanner: Sendable {
             return relative
                 .map { (homePath as NSString).appendingPathComponent($0) }
                 .filter { FileManager.default.fileExists(atPath: $0) }
-                .map { ScanItem(ruleID: rule.id, path: $0) }
+                .map { ScanItem(ruleID: rule.id, path: $0, reclaimable: rule.reclaimable == nil ? nil : .pending) }
         }
     }
 
@@ -93,14 +96,18 @@ public struct Scanner: Sendable {
 
     private func measure(_ items: [ScanItem], _ continuation: AsyncStream<ScanEvent>.Continuation) async {
         let protected = Dictionary(uniqueKeysWithValues: rules.map { ($0.id, $0.protectedFileNames) })
-        let estimates = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.reclaimableCommand.map { (rule.id, $0) } })
         await forEachConcurrently(items, width: concurrency) { item in
-            // Estimate first, so the folder size never shows as cleanable while the tool answers.
-            if let command = estimates[item.ruleID] {
-                continuation.yield(.estimated(path: item.path, reclaimable: await Reclaimable.estimate(command)))
-            }
             let usage = DiskUsage.usage(of: item.path, protectedNames: protected[item.ruleID] ?? [])
             continuation.yield(.measured(path: item.path, usage: usage))
+        }
+    }
+
+    private func estimate(_ items: [ScanItem], _ continuation: AsyncStream<ScanEvent>.Continuation) async {
+        let queries = Dictionary(uniqueKeysWithValues: rules.compactMap { rule in rule.reclaimable.map { (rule.id, $0) } })
+        let asking = items.compactMap { item in queries[item.ruleID].map { (item.path, $0) } }
+        await forEachConcurrently(asking, width: concurrency) { path, query in
+            guard let reclaimable = await query.estimate() else { return }
+            continuation.yield(.estimated(path: path, reclaimable: reclaimable))
         }
     }
 

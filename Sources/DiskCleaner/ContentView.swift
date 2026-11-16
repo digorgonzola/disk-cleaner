@@ -412,9 +412,12 @@ struct ReclaimableNote: View {
 
     var body: some View {
         switch item.reclaimable {
+        case .pending:
+            Label("Asking the tool what cleaning can free…", systemImage: "hourglass")
+                .foregroundStyle(.secondary)
         case .bytes:
             if let usage = item.usage {
-                Label("Can free \(Format.bytes(item.bytes)) of the \(Format.bytes(usage.bytes)) disk image", systemImage: "internaldrive")
+                Label("Can free about \(Format.bytes(item.bytes)) of the \(Format.bytes(usage.bytes)) disk image", systemImage: "internaldrive")
                     .foregroundStyle(.secondary)
             }
         case .unknown(let reason):
@@ -465,7 +468,7 @@ struct ItemRow: View {
                 .frame(width: 64, alignment: .trailing)
                 .help("Newest file inside was modified then")
             Group {
-                if item.usage != nil {
+                if item.usage != nil, item.reclaimable != .pending {
                     Text(Format.bytes(item.bytes))
                 } else {
                     ProgressView().controlSize(.mini)
