@@ -37,7 +37,16 @@ public struct Purger: Sendable {
         for _ in 0..<2 {
             try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
             if Darwin.rename(path, staged) == 0 {
-                if keepOrigin { Purger.setOrigin(path, on: staged) }
+                guard keepOrigin else {
+                    // A folder moved back earlier may still carry an origin from that attempt.
+                    confirmDelete(staged)
+                    return staged
+                }
+                guard Purger.setOrigin(path, on: staged) else {
+                    // Without the origin, a crash would delete it, so leave it where it was.
+                    _ = renamex_np(staged, path, UInt32(RENAME_EXCL))
+                    throw CleanError.deleteFailed(path: path, reason: "could not record its original path")
+                }
                 return staged
             }
             code = errno
@@ -73,9 +82,9 @@ public struct Purger: Sendable {
         return failures
     }
 
-    private static func setOrigin(_ origin: String, on staged: String) {
+    private static func setOrigin(_ origin: String, on staged: String) -> Bool {
         let bytes = Array(origin.utf8)
-        _ = setxattr(staged, originAttribute, bytes, bytes.count, 0, XATTR_NOFOLLOW)
+        return setxattr(staged, originAttribute, bytes, bytes.count, 0, XATTR_NOFOLLOW) == 0
     }
 
     static func origin(of staged: String) -> String? {

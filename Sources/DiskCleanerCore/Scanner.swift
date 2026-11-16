@@ -298,7 +298,8 @@ enum WorktreeInspector {
             let folder = path + "/" + relative
             let found = await runBlocking { DiskUsage.usage(of: folder, protectedNames: allProtectedNames).protectedFiles }
             if let first = found.first {
-                problems.append("Holds local state: \(relative)/\(first)")
+                // A protected file listed on its own reports an empty name relative to itself.
+                problems.append("Holds local state: " + (first.isEmpty ? relative : "\(relative)/\(first)"))
             }
         }
 

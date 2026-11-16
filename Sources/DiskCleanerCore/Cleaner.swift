@@ -256,10 +256,11 @@ public struct Cleaner: Sendable {
         guard let output, output.succeeded else {
             let restored = moved.map { entry -> String in
                 if (try? purger.restore(entry.staged, to: entry.original)) != nil { return "\(entry.relative): moved back" }
-                // git got far enough to delete the folder's parent, so finish the delete.
+                // No way back: git got far enough to delete the parent, or something (a running
+                // agent) created the folder again. The staged copy is build output, so delete it.
                 purger.confirmDelete(entry.staged)
                 queue.enqueue(entry.staged, original: entry.original, canRestore: false)
-                return "\(entry.relative): parent gone, deleting"
+                return "\(entry.relative): could not move back, deleting"
             }
             let message = output?.stderr ?? (Task.isCancelled ? "Stopped" : "git could not start")
             return CleanOutcome(label: label, error: message.trimmingCharacters(in: .whitespacesAndNewlines), log: restored.joined(separator: "\n"))
