@@ -4,7 +4,7 @@ import SwiftUI
 
 enum Format {
     static func bytes(_ value: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
+        value == 0 ? "—" : ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
 
     static func age(_ date: Date?) -> String {
@@ -17,6 +17,23 @@ enum Format {
         let home = NSHomeDirectory()
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
+}
+
+extension RuleCategory {
+    var tint: Color { RuleCategory.tints[self] ?? .secondary }
+
+    private static let tints: [RuleCategory: Color] = [
+        .worktrees: .purple,
+        .projectArtifacts: .orange,
+        .packageManagers: .blue,
+        .infrastructure: .teal,
+        .containers: .indigo,
+        .testing: .pink,
+        .editors: .mint,
+        .browsers: .cyan,
+        .system: .gray,
+        .reviewOnly: .secondary,
+    ]
 }
 
 extension Risk {
@@ -59,18 +76,44 @@ struct Checkbox: View {
     ]
 }
 
-/// Horizontal bar scaled against the largest value in a list.
+/// Horizontal bar scaled against the largest value in a list. `selectedFraction` draws the
+/// selected share solid over a faint bar for the whole.
 struct SizeBar: View {
     let fraction: Double
+    var selectedFraction: Double?
     var color: Color = .accentColor
+    var height: CGFloat = 6
 
     var body: some View {
         GeometryReader { proxy in
+            let width = proxy.size.width
             ZStack(alignment: .leading) {
                 Capsule().fill(.quaternary)
-                Capsule().fill(color.gradient).frame(width: max(4, proxy.size.width * min(1, fraction)))
+                if let selectedFraction {
+                    Capsule().fill(color.opacity(0.35)).frame(width: max(4, width * min(1, fraction)))
+                    if selectedFraction > 0 {
+                        Capsule().fill(color.gradient).frame(width: max(4, width * min(1, selectedFraction)))
+                    }
+                } else {
+                    Capsule().fill(color.gradient).frame(width: max(4, width * min(1, fraction)))
+                }
             }
         }
-        .frame(height: 6)
+        .frame(height: height)
+    }
+}
+
+/// Small label for the rule that found an item, shown where rows from many rules mix.
+struct Tag: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption2.weight(.medium))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(color.opacity(0.15), in: Capsule())
+            .foregroundStyle(color)
     }
 }

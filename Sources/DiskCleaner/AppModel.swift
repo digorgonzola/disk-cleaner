@@ -5,6 +5,16 @@ import Observation
 enum SidebarEntry: Hashable {
     case overview
     case category(RuleCategory)
+
+    /// Stable string form, so the last section survives relaunches.
+    var storageKey: String {
+        if case .category(let category) = self { return category.id }
+        return "overview"
+    }
+
+    init(storageKey: String?) {
+        self = RuleCategory(rawValue: storageKey ?? "").map(SidebarEntry.category) ?? .overview
+    }
 }
 
 @MainActor
@@ -13,7 +23,9 @@ final class AppModel {
     let rules = RuleCatalog.all
     let rulesByID = Dictionary(uniqueKeysWithValues: RuleCatalog.all.map { ($0.id, $0) })
 
-    var sidebarSelection: SidebarEntry? = .overview
+    var sidebarSelection: SidebarEntry? {
+        didSet { UserDefaults.standard.set(sidebarSelection?.storageKey, forKey: Self.sidebarKey) }
+    }
     var items: [String: ScanItem] = [:] {
         didSet { itemsByRule = Dictionary(grouping: items.values, by: \.ruleID).mapValues { $0.sorted { $0.bytes > $1.bytes } } }
     }
@@ -33,6 +45,7 @@ final class AppModel {
     }
 
     private static let rootsKey = "projectRoots"
+    private static let sidebarKey = "sidebarSelection"
     private static let staleDays: [RuleCategory: Double] = [.worktrees: 14]
     private static let defaultStaleDays = 30.0
     private var scanTask: Task<Void, Never>?
@@ -40,6 +53,7 @@ final class AppModel {
 
     init() {
         projectRoots = UserDefaults.standard.stringArray(forKey: Self.rootsKey) ?? Scanner.defaultProjectRoots()
+        sidebarSelection = SidebarEntry(storageKey: UserDefaults.standard.string(forKey: Self.sidebarKey))
     }
 
     // MARK: Scanning
@@ -68,7 +82,9 @@ final class AppModel {
         for await event in stream {
             pending.append(event)
             // Apply in batches so thousands of size updates do not re-render the list each time.
-            if Date().timeIntervalSince(lastFlush) > 0.25 {
+            // New locations are applied at once: the next event can be minutes away.
+            let isDiscovery = if case .discovered = event { true } else { false }
+            if isDiscovery || Date().timeIntervalSince(lastFlush) > 0.25 {
                 apply(pending)
                 pending.removeAll()
                 lastFlush = Date()
@@ -110,9 +126,35 @@ final class AppModel {
 
     // MARK: Queries
 
+    /// Categories with findings, largest first; "Review manually" always last.
     var visibleCategories: [RuleCategory] {
-        RuleCategory.allCases.filter { category in rules.contains { $0.category == category && !items(for: $0).isEmpty } }
+        let found = RuleCategory.allCases.filter { category in
+            rules.contains { $0.category == category && !items(for: $0).isEmpty }
+        }
+        let sizes = Dictionary(uniqueKeysWithValues: found.map { ($0, totalBytes(for: $0)) })
+        return found.sorted { lhs, rhs in
+            if (lhs == .reviewOnly) != (rhs == .reviewOnly) { return rhs == .reviewOnly }
+            return sizes[lhs, default: 0] > sizes[rhs, default: 0]
+        }
     }
+
+    /// Short human name for a row: the worktree name, the project a build folder belongs to,
+    /// or the rule name for fixed cache locations.
+    func title(for item: ScanItem) -> String {
+        if item.worktree != nil { return (item.path as NSString).lastPathComponent }
+        guard let rule = rulesByID[item.ruleID], case .projectFolder = rule.target else {
+            return rulesByID[item.ruleID]?.name ?? item.path
+        }
+        let root = projectRoots.first { item.path.hasPrefix($0 + "/") }
+        let relative = root.map { String(item.path.dropFirst($0.count + 1)) } ?? Format.path(item.path)
+        return (relative as NSString).deletingLastPathComponent
+            .replacingOccurrences(of: "/.claude/worktrees/", with: " › ")
+    }
+
+    var selectedCount: Int { selection.count }
+
+    /// Free space after cleaning the current selection, ignoring APFS clone sharing.
+    var projectedAvailable: Int64? { volume.map { $0.available + selectedBytes() } }
 
     func rules(in category: RuleCategory) -> [CleanupRule] {
         rules.filter { $0.category == category && !items(for: $0).isEmpty }
@@ -170,6 +212,11 @@ final class AppModel {
         let selected = selectable.filter { selection.contains($0.path) }.count
         if selected == 0 { return .none }
         return selected == selectable.count ? .all : .some
+    }
+
+    func setSelection(_ isSelected: Bool, in category: RuleCategory) {
+        let paths = rules(in: category).flatMap(items(for:)).filter(canSelect).map(\.path)
+        if isSelected { selection.formUnion(paths) } else { selection.subtract(paths) }
     }
 
     func toggle(_ rule: CleanupRule) {

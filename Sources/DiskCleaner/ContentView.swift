@@ -15,7 +15,11 @@ struct ContentView: View {
                 Section("Found") {
                     ForEach(model.visibleCategories) { category in
                         HStack {
-                            Label(category.rawValue, systemImage: category.symbol)
+                            Label {
+                                Text(category.rawValue)
+                            } icon: {
+                                Image(systemName: category.symbol).foregroundStyle(category.tint)
+                            }
                             Spacer()
                             Text(Format.bytes(model.totalBytes(for: category)))
                                 .font(.caption.monospacedDigit())
@@ -38,25 +42,30 @@ struct ContentView: View {
             }
         } detail: {
             VStack(spacing: 0) {
-                StatusHeader()
+                SummaryHeader()
                 Divider()
                 detail
             }
         }
+        .navigationTitle(navigationTitle)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 if model.isScanning {
                     Button("Stop", systemImage: "stop.circle") { model.stopScan() }
+                        .help("Stop scanning")
                 } else {
-                    Button("Scan", systemImage: "arrow.clockwise") { model.startScan() }
+                    Button("Rescan", systemImage: "arrow.clockwise") { model.startScan() }
                         .disabled(model.isCleaning)
+                        .help("Scan again (⌘R)")
                 }
                 Button {
                     isConfirming = true
                 } label: {
-                    Label("Clean \(Format.bytes(model.selectedBytes()))…", systemImage: "trash")
+                    Label(model.selection.isEmpty ? "Clean…" : "Clean \(Format.bytes(model.selectedBytes()))…", systemImage: "trash")
                         .labelStyle(.titleAndIcon)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
                 .disabled(model.selection.isEmpty || model.isScanning || model.isCleaning)
             }
         }
@@ -74,6 +83,11 @@ struct ContentView: View {
         .task { if !model.hasScanned && !model.isScanning { model.startScan() } }
     }
 
+    private var navigationTitle: String {
+        if case .category(let category) = model.sidebarSelection { return category.rawValue }
+        return "Disk Cleaner"
+    }
+
     @ViewBuilder
     private var detail: some View {
         switch model.sidebarSelection {
@@ -83,139 +97,297 @@ struct ContentView: View {
     }
 }
 
-struct StatusHeader: View {
+// MARK: Header
+
+struct SummaryHeader: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(alignment: .top, spacing: 28) {
             if let volume = model.volume {
-                let used = Double(volume.total - volume.available) / Double(max(volume.total, 1))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("\(Format.bytes(volume.available)) free of \(Format.bytes(volume.total))")
-                        .font(.headline)
-                    SizeBar(fraction: used, color: used > 0.9 ? .red : (used > 0.8 ? .orange : .accentColor))
-                        .frame(width: 260)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("\(Format.bytes(volume.available)) free").font(.title2.bold())
+                        Text("of \(Format.bytes(volume.total))").foregroundStyle(.secondary)
+                    }
+                    DiskBar(total: volume.total, available: volume.available, selected: model.selectedBytes())
+                        .frame(width: 320)
+                    Group {
+                        if model.selectedBytes() > 0, let projected = model.projectedAvailable {
+                            Label("Up to \(Format.bytes(projected)) free after cleaning", systemImage: "arrow.right")
+                                .foregroundStyle(.green)
+                        } else {
+                            Text(" ")
+                        }
+                    }
+                    .font(.caption)
                 }
             }
-            Spacer()
-            if model.isScanning {
-                ProgressView().controlSize(.small)
-                Text("Scanning… \(model.measuredCount) of \(model.items.count) measured")
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            } else if model.isCleaning {
-                ProgressView().controlSize(.small)
-                Text("Cleaning \(model.cleaningLabel ?? "")…").foregroundStyle(.secondary).lineLimit(1)
-            } else if model.hasScanned {
-                Text("\(Format.bytes(model.cleanableBytes)) found · \(Format.bytes(model.selectedBytes())) selected")
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
+
+            Divider().frame(height: 56)
+
+            Stat(title: "Found", value: Format.bytes(model.cleanableBytes),
+                 detail: "\(model.items.count.formatted()) locations")
+            Stat(title: "Selected", value: Format.bytes(model.selectedBytes()),
+                 detail: "\(model.selectedCount.formatted()) item\(model.selectedCount == 1 ? "" : "s")",
+                 color: model.selection.isEmpty ? .secondary : .green)
+
+            Spacer(minLength: 12)
+            ActivityStatus().frame(width: 230, alignment: .trailing)
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.vertical, 14)
     }
 }
+
+/// Disk usage as one bar: used space, with the part the selection would free in green.
+struct DiskBar: View {
+    let total: Int64
+    let available: Int64
+    let selected: Int64
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let scale = width / Double(max(total, 1))
+            let usedWidth = Double(total - available) * scale
+            let selectedWidth = min(usedWidth, Double(selected) * scale)
+            ZStack(alignment: .leading) {
+                Rectangle().fill(.quaternary)
+                Rectangle().fill(usedColor.gradient).frame(width: usedWidth)
+                Rectangle().fill(Color.green.gradient)
+                    .frame(width: selectedWidth)
+                    .offset(x: usedWidth - selectedWidth)
+            }
+            .clipShape(Capsule())
+        }
+        .frame(height: 10)
+        .accessibilityLabel("\(Format.bytes(available)) free of \(Format.bytes(total))")
+    }
+
+    private var usedColor: Color {
+        let used = Double(total - available) / Double(max(total, 1))
+        return used > 0.9 ? .red : (used > 0.8 ? .orange : .accentColor)
+    }
+}
+
+struct Stat: View {
+    let title: String
+    let value: String
+    let detail: String
+    var color: Color = .primary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.title2.bold().monospacedDigit()).foregroundStyle(color)
+            Text(detail).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+        }
+    }
+}
+
+struct ActivityStatus: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            if model.isCleaning {
+                ProgressView().controlSize(.small)
+                Text("Cleaning \(model.cleaningLabel ?? "")…").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            } else if model.isScanning {
+                if model.measuredCount == 0 {
+                    ProgressView().controlSize(.small)
+                    Text("Finding caches…").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ProgressView(value: Double(model.measuredCount), total: Double(max(model.items.count, 1)))
+                    Text("Measuring \(model.measuredCount.formatted()) of \(model.items.count.formatted())")
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+            } else if model.hasScanned {
+                Label("Scan complete", systemImage: "checkmark.circle.fill")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+// MARK: Overview
 
 struct OverviewView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         let categories = model.visibleCategories.filter { $0 != .reviewOnly }
-        let maxBytes = categories.map { model.totalBytes(for: $0) }.max() ?? 1
+        let maxBytes = Double(max(categories.map { model.totalBytes(for: $0) }.max() ?? 1, 1))
         List {
-            Section("By category") {
-                ForEach(categories.sorted { model.totalBytes(for: $0) > model.totalBytes(for: $1) }) { category in
+            if !categories.isEmpty {
+                Section("Where the space is") {
+                ForEach(categories) { category in
+                    let total = model.totalBytes(for: category)
+                    let selected = model.selectedBytes(in: category)
                     Button {
                         model.sidebarSelection = .category(category)
                     } label: {
                         HStack(spacing: 12) {
-                            Label(category.rawValue, systemImage: category.symbol).frame(width: 220, alignment: .leading)
-                            SizeBar(fraction: Double(model.totalBytes(for: category)) / Double(max(maxBytes, 1)))
-                            Text(Format.bytes(model.totalBytes(for: category)))
-                                .monospacedDigit().frame(width: 80, alignment: .trailing)
-                            Text("\(Format.bytes(model.selectedBytes(in: category))) selected")
-                                .font(.caption).foregroundStyle(.secondary).frame(width: 110, alignment: .trailing)
+                            Label {
+                                Text(category.rawValue)
+                            } icon: {
+                                Image(systemName: category.symbol).foregroundStyle(category.tint)
+                            }
+                            .frame(width: 210, alignment: .leading)
+                            SizeBar(fraction: Double(total) / maxBytes, selectedFraction: Double(selected) / maxBytes,
+                                    color: category.tint, height: 8)
+                            Text(Format.bytes(total))
+                                .font(.body.monospacedDigit()).frame(width: 84, alignment: .trailing)
+                            Text(selected > 0 ? "\(Format.bytes(selected)) selected" : "")
+                                .font(.caption.monospacedDigit()).foregroundStyle(.green)
+                                .frame(width: 120, alignment: .trailing)
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }
+                        .padding(.vertical, 3)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    }
                 }
-            }
-            Section("Largest items") {
-                ForEach(model.largestItems) { item in
-                    ItemRow(item: item, showsRule: true)
+                Section("Largest items") {
+                    ForEach(model.largestItems) { item in
+                        ItemRow(item: item, showsRule: true)
+                    }
                 }
             }
         }
-        .overlay {
-            if model.items.isEmpty && !model.isScanning {
-                ContentUnavailableView("No scan yet", systemImage: "internaldrive", description: Text("Press Scan to measure caches and build artifacts."))
+        .overlay { ScanPlaceholder() }
+    }
+}
+
+struct ScanPlaceholder: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if model.items.isEmpty {
+            if model.isScanning {
+                ContentUnavailableView {
+                    Label("Looking for caches…", systemImage: "magnifyingglass")
+                } description: {
+                    Text("Checking \(model.projectRoots.count) project folders and known cache locations.")
+                }
+            } else {
+                ContentUnavailableView("No scan yet", systemImage: "internaldrive",
+                                       description: Text("Press Rescan to measure caches and build artifacts."))
             }
         }
     }
 }
+
+// MARK: Category
 
 struct CategoryView: View {
     @Environment(AppModel.self) private var model
     let category: RuleCategory
+    @State private var showingAll: Set<String> = []
+
+    private static let previewCount = 25
 
     var body: some View {
         List {
+            HStack {
+                Label(category.rawValue, systemImage: category.symbol)
+                    .font(.title3.bold())
+                    .foregroundStyle(category.tint)
+                Spacer()
+                if category != .reviewOnly {
+                    Button("Select all") { model.setSelection(true, in: category) }
+                    Button("Select none") { model.setSelection(false, in: category) }
+                }
+            }
+            .buttonStyle(.borderless)
+            .listRowSeparator(.hidden)
+
+            // One section per rule keeps rows lazy: node_modules alone can be over a thousand.
             ForEach(model.rules(in: category)) { rule in
-                RuleSection(rule: rule)
+                let items = model.items(for: rule)
+                let listsItems = items.count > 1 || items.first?.worktree != nil
+                Section {
+                    if listsItems {
+                        let isShowingAll = showingAll.contains(rule.id)
+                        ForEach(isShowingAll ? items : Array(items.prefix(Self.previewCount))) { item in
+                            ItemRow(item: item)
+                        }
+                        if items.count > Self.previewCount {
+                            Button(isShowingAll ? "Show fewer" : "Show all \(items.count.formatted()) locations") {
+                                if isShowingAll { showingAll.remove(rule.id) } else { showingAll.insert(rule.id) }
+                            }
+                            .buttonStyle(.link)
+                            .padding(.leading, 56)
+                        }
+                    }
+                } header: {
+                    RuleHeader(rule: rule)
+                }
             }
         }
-        .navigationTitle(category.rawValue)
+        .overlay { ScanPlaceholder() }
     }
 }
 
-struct RuleSection: View {
+struct RuleHeader: View {
     @Environment(AppModel.self) private var model
     let rule: CleanupRule
-    @State private var isExpanded = false
 
     var body: some View {
-        let items = model.items(for: rule)
-        Section {
-            if items.count == 1, let item = items.first, item.worktree == nil {
-                EmptyView()
-            } else {
-                DisclosureGroup("\(items.count) locations", isExpanded: $isExpanded) {
-                    ForEach(items) { ItemRow(item: $0) }
-                }
-            }
-        } header: {
-            header(items: items)
-        }
+        header(items: model.items(for: rule))
+            .textCase(nil)
+            .foregroundStyle(.primary)
+            .padding(.top, 14)
+            .padding(.bottom, 6)
     }
 
     private func header(items: [ScanItem]) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Checkbox(state: model.selectionState(for: rule), isEnabled: !rule.isReportOnly) { model.toggle(rule) }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
                     Text(rule.name).font(.headline)
-                    RiskBadge(risk: rule.risk)
+                    if !rule.isReportOnly { RiskBadge(risk: rule.risk) }
                     if let command = rule.cleanCommand {
-                        Text(command).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                        Text(command)
+                            .font(.caption.monospaced())
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                            .lineLimit(1)
+                            .help("Cleaned by running this command")
                     }
                 }
-                Text(rule.detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if items.count == 1, let item = items.first {
+                Text(rule.detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .help(rule.detail)
+                if items.count == 1, let item = items.first, item.worktree == nil {
                     Text(Format.path(item.path)).font(.caption.monospaced()).foregroundStyle(.tertiary)
                         .contextMenu { ItemContextMenu(path: item.path) }
+                    if let blocker = item.blocker {
+                        Label(blocker, systemImage: "lock.fill").font(.caption).foregroundStyle(.red)
+                    }
                 }
             }
-            Spacer()
-            Text(Format.bytes(model.totalBytes(for: rule)))
-                .font(.title3.monospacedDigit())
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(Format.bytes(model.totalBytes(for: rule)))
+                    .font(.title3.monospacedDigit().weight(.semibold))
+                if items.count > 1 {
+                    let selected = items.filter { model.selection.contains($0.path) }.count
+                    Text("\(items.count.formatted()) found" + (selected > 0 ? " · \(selected.formatted()) selected" : ""))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
-        .textCase(nil)
-        .foregroundStyle(.primary)
-        .padding(.vertical, 6)
     }
 }
+
+// MARK: Rows
 
 struct ItemRow: View {
     @Environment(AppModel.self) private var model
@@ -223,34 +395,35 @@ struct ItemRow: View {
     var showsRule = false
 
     var body: some View {
+        let rule = model.rulesByID[item.ruleID]
+        let tint = rule?.category.tint ?? .secondary
+        let title = model.title(for: item)
         HStack(spacing: 10) {
             Checkbox(state: model.selection.contains(item.path) ? .all : .none, isEnabled: model.canSelect(item)) {
                 model.toggle(item)
             }
+            Image(systemName: rule?.category.symbol ?? "folder")
+                .foregroundStyle(tint)
+                .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
-                if showsRule, let rule = model.rulesByID[item.ruleID] {
-                    Text(rule.name).font(.callout.weight(.medium))
-                }
-                Text(Format.path(item.path)).font(.callout.monospaced()).lineLimit(1).truncationMode(.middle)
-                if item.worktree == nil, let blocker = item.blocker {
-                    Label(blocker, systemImage: "lock.fill").font(.caption).foregroundStyle(.red)
-                }
-                if let worktree = item.worktree {
-                    HStack(spacing: 6) {
-                        if let branch = worktree.branch {
-                            Label(branch, systemImage: "arrow.triangle.branch").font(.caption).foregroundStyle(.secondary)
-                        }
-                        if let blocker = item.blocker {
-                            Label(blocker, systemImage: "lock.fill").font(.caption).foregroundStyle(.red)
-                        } else if let warning = item.warning {
-                            Label(warning, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
-                        }
+                HStack(spacing: 6) {
+                    Text(title).font(.body.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                    if showsRule, let rule {
+                        if rule.name != title { Tag(text: rule.name, color: tint) }
+                        if rule.risk == .caution { RiskBadge(risk: .caution) }
                     }
                 }
+                Text(Format.path(item.path))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                statusLine
             }
-            Spacer()
+            Spacer(minLength: 12)
             Text(Format.age(item.usage?.lastModified))
-                .font(.caption).foregroundStyle(.secondary).frame(width: 70, alignment: .trailing)
+                .font(.caption).foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .trailing)
                 .help("Newest file inside was modified then")
             Group {
                 if let usage = item.usage {
@@ -259,10 +432,39 @@ struct ItemRow: View {
                     ProgressView().controlSize(.mini)
                 }
             }
-            .monospacedDigit()
-            .frame(width: 80, alignment: .trailing)
+            .font(.body.monospacedDigit().weight(.semibold))
+            .frame(width: 84, alignment: .trailing)
         }
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onTapGesture { model.toggle(item) }
         .contextMenu { ItemContextMenu(path: item.path) }
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
+        let branch = item.worktree?.branch
+        if branch != nil || item.blocker != nil || item.warning != nil {
+            HStack(spacing: 8) {
+                if let branch {
+                    Label(branch, systemImage: "arrow.triangle.branch")
+                        .foregroundStyle(.secondary)
+                        .fixedSize()
+                }
+                if let blocker = item.blocker {
+                    Label(blocker, systemImage: "lock.fill")
+                        .foregroundStyle(.red)
+                        .help(blocker)
+                } else if let warning = item.warning {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .help(warning)
+                }
+            }
+            .font(.caption)
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
     }
 }
 
