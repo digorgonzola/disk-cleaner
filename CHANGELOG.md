@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/digorgonzola/disk-cleaner/compare/v0.2.0...v0.2.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **rules:** empty the Trash directly instead of through Finder ([#14](https://github.com/digorgonzola/disk-cleaner/issues/14)) ([ea63118](https://github.com/digorgonzola/disk-cleaner/commit/ea63118635e584b266f6b025a92e54e7248ee76b))
+* **rules:** show what a VM prune can free, not the disk image size ([#15](https://github.com/digorgonzola/disk-cleaner/issues/15)) ([ec58fd0](https://github.com/digorgonzola/disk-cleaner/commit/ec58fd0da4d4904cde13261f72b0aacc83c28108))
+
 ## [0.2.0](https://github.com/digorgonzola/disk-cleaner/compare/v0.1.1...v0.2.0) (2026-11-16)
 
 
