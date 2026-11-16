@@ -44,6 +44,9 @@ final class AppModel {
         didSet { UserDefaults.standard.set(projectRoots, forKey: Self.rootsKey) }
     }
 
+    /// Below this share of free space the menu bar shows a warning symbol.
+    static let lowSpaceFraction = 0.1
+    private static let volumeRefreshInterval: Duration = .seconds(30)
     private static let rootsKey = "projectRoots"
     private static let sidebarKey = "sidebarSelection"
     private static let staleDays: [RuleCategory: Double] = [.worktrees: 14]
@@ -54,6 +57,13 @@ final class AppModel {
     init() {
         projectRoots = UserDefaults.standard.stringArray(forKey: Self.rootsKey) ?? Scanner.defaultProjectRoots()
         sidebarSelection = SidebarEntry(storageKey: UserDefaults.standard.string(forKey: Self.sidebarKey))
+        // Keeps the menu bar figure current while the app sits in the background.
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.volumeRefreshInterval)
+                self?.volume = DiskUsage.volumeSpace()
+            }
+        }
     }
 
     // MARK: Scanning

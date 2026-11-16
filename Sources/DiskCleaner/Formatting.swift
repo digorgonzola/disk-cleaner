@@ -7,6 +7,13 @@ enum Format {
         value == 0 ? "—" : ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
 
+    /// Short form for the menu bar: "27 GB", "8.4 GB", "1.2 TB".
+    static func compactBytes(_ value: Int64) -> String {
+        let gigabytes = Double(value) / 1_000_000_000
+        if gigabytes >= 1_000 { return String(format: "%.1f TB", gigabytes / 1_000) }
+        return gigabytes >= 10 ? String(format: "%.0f GB", gigabytes) : String(format: "%.1f GB", gigabytes)
+    }
+
     static func age(_ date: Date?) -> String {
         guard let date else { return "" }
         let days = Int(Date().timeIntervalSince(date) / 86_400)
