@@ -269,6 +269,10 @@ public enum RuleCatalog {
 
     static let reviewOnly: [CleanupRule] = [
         CleanupRule(
+            id: "purge-area", name: "Disk Cleaner purge area", category: .reviewOnly,
+            detail: "Folders a clean moved aside but could not delete, for example root-owned files from `sudo npm`. The app retries them at launch; delete them in Finder or with sudo if they stay.",
+            target: .homePaths(["Library/Caches/local.disk-cleaner/purge"]), isReportOnly: true),
+        CleanupRule(
             id: "claude-vm", name: "Claude desktop VM bundles", category: .reviewOnly,
             detail: "VM images for Claude's sandboxed sessions. Remove from inside the Claude app if needed.",
             target: .homePaths(["Library/Application Support/Claude/vm_bundles"]), isReportOnly: true),

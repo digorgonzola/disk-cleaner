@@ -1,6 +1,7 @@
 import DiskCleanerCore
 import Foundation
 import Observation
+import os
 
 enum SidebarEntry: Hashable {
     case overview
@@ -37,6 +38,8 @@ final class AppModel {
     var measuredCount = 0
     var volume = DiskUsage.volumeSpace()
     var outcomes: [CleanOutcome] = []
+    /// Outcomes a clean reports when nothing fails; the progress total.
+    var expectedOutcomes = 0
     var freedBytes: Int64?
     var cleaningLabel: String?
 
@@ -47,6 +50,7 @@ final class AppModel {
     /// Below this share of free space the menu bar shows a warning symbol.
     static let lowSpaceFraction = 0.1
     private static let volumeRefreshInterval: Duration = .seconds(30)
+    nonisolated static let log = Logger(subsystem: "local.disk-cleaner", category: "clean")
     private static let rootsKey = "projectRoots"
     private static let sidebarKey = "sidebarSelection"
     private static let staleDays: [RuleCategory: Double] = [.worktrees: 14]
@@ -57,6 +61,13 @@ final class AppModel {
     init() {
         projectRoots = UserDefaults.standard.stringArray(forKey: Self.rootsKey) ?? Scanner.defaultProjectRoots()
         sidebarSelection = SidebarEntry(storageKey: UserDefaults.standard.string(forKey: Self.sidebarKey))
+        // Folders a crash left in the purge area. Ones that still fail stay there and show up
+        // in the next scan as a "Review manually" item.
+        Task.detached(priority: .utility) {
+            for (path, reason) in await Purger().recoverLeftovers() {
+                AppModel.log.warning("Could not delete \(path, privacy: .public): \(reason, privacy: .public)")
+            }
+        }
         // Keeps the menu bar figure current while the app sits in the background.
         Task { [weak self] in
             while !Task.isCancelled {
@@ -239,23 +250,39 @@ final class AppModel {
     private func clean() async {
         let toClean = selectedItems
         guard !toClean.isEmpty else { return }
+        let cleaner = Cleaner()
         isCleaning = true
         outcomes = []
-        freedBytes = nil
+        expectedOutcomes = cleaner.expectedOutcomeCount(toClean)
+        freedBytes = 0
         let before = DiskUsage.volumeSpace()?.available
 
-        await Cleaner().clean(toClean) { outcome in
-            await MainActor.run {
-                self.outcomes.append(outcome)
-                self.cleaningLabel = outcome.label
+        // The cleaner reports from many tasks at once. Collect outcomes off the main actor
+        // and publish them a few times a second: one list update per item made big cleans
+        // spend more time re-rendering the sheet than deleting.
+        let buffer = OutcomeBuffer()
+        let publisher = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                await self?.publish(buffer.drain(), freedSince: before)
             }
         }
+        await cleaner.clean(toClean) { outcome in buffer.append(outcome) }
+        publisher.cancel()
+        await publish(buffer.drain(), freedSince: before)
 
-        volume = DiskUsage.volumeSpace()
-        if let before, let after = volume?.available { freedBytes = after - before }
         await refresh(toClean)
         cleaningLabel = nil
         isCleaning = false
+    }
+
+    private func publish(_ batch: [CleanOutcome], freedSince before: Int64?) async {
+        // The volume query can block, so it stays off the main actor.
+        volume = await Task.detached { DiskUsage.volumeSpace() }.value
+        if let before, let after = volume?.available { freedBytes = after - before }
+        guard !batch.isEmpty else { return }
+        outcomes += batch
+        cleaningLabel = batch.last?.label
     }
 
     func cancelClean() { cleanTask?.cancel() }
@@ -266,18 +293,50 @@ final class AppModel {
 
     /// Re-measures only what was cleaned, instead of a full rescan that can take minutes.
     private func refresh(_ cleaned: [ScanItem]) async {
-        var updated = items
-        for item in cleaned {
-            selection.remove(item.path)
-            if FileManager.default.fileExists(atPath: item.path) {
-                let path = item.path
-                let protectedNames = rulesByID[item.ruleID]?.protectedFileNames ?? []
-                updated[path]?.usage = await Task.detached { DiskUsage.usage(of: path, protectedNames: protectedNames) }.value
-            } else {
-                // Removing a worktree also removes everything found inside it.
-                updated = updated.filter { !($0.key == item.path || $0.key.hasPrefix(item.path + "/")) }
+        selection.subtract(cleaned.map(\.path))
+        let remaining = cleaned.filter { FileManager.default.fileExists(atPath: $0.path) }
+            .map { ($0.path, rulesByID[$0.ruleID]?.protectedFileNames ?? []) }
+
+        let measured = await Task.detached(priority: .userInitiated) {
+            await withTaskGroup(of: (String, Usage).self) { group in
+                for (path, names) in remaining {
+                    group.addTask { (path, DiskUsage.usage(of: path, protectedNames: names)) }
+                }
+                var results: [String: Usage] = [:]
+                for await (path, usage) in group { results[path] = usage }
+                return results
             }
+        }.value
+
+        // Removing a folder also removes everything found inside it.
+        // Drop anything at or under a cleaned path that no longer exists. That includes a
+        // node_modules moved out of a worktree whose removal git then refused. Walking each
+        // item's few parents avoids comparing every pair.
+        let cleanedRoots = Set(cleaned.map(\.path))
+        var updated = items.filter { entry in
+            var path = entry.key
+            while path.count > 1 {
+                if cleanedRoots.contains(path) { return FileManager.default.fileExists(atPath: entry.key) }
+                path = (path as NSString).deletingLastPathComponent
+            }
+            return true
         }
+        for (path, usage) in measured { updated[path]?.usage = usage }
         items = updated
+    }
+}
+
+/// Thread-safe outcome collector; the cleaner calls it from many tasks at once.
+final class OutcomeBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: [CleanOutcome] = []
+
+    func append(_ outcome: CleanOutcome) { lock.withLock { pending.append(outcome) } }
+
+    func drain() -> [CleanOutcome] {
+        lock.withLock {
+            defer { pending.removeAll() }
+            return pending
+        }
     }
 }

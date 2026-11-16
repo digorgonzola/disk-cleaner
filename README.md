@@ -73,10 +73,24 @@ menu bar when you close its window. Turn the menu bar item off in
    block it.
    A `.terragrunt-cache` that holds a local `terraform.tfstate` cannot be
    selected either.
-   Commands time out after 30 minutes, and **Stop** cancels a clean between items.
+   A locked worktree (`git worktree lock`) cannot be selected.
 3. Everything else is deleted permanently, not moved to the Trash. `SafePath`
    only allows a delete when the path is inside your home folder and matches the
    rule exactly (a catalog path, or a folder with the rule's name).
+
+### Speed
+
+Clean commands, worktree removals and deletes run at the same time. A deleted
+folder first moves into a purge area (`~/Library/Caches/local.disk-cleaner/purge`)
+with one rename, so it leaves its place at once. A pool of 4 then deletes the
+files: on APFS, 4 parallel deletes were fastest, and 8 or 16 were slower. For a
+worktree, the build output that git lists as ignored moves to the pool too, but
+is only deleted after `git worktree remove` succeeds. If git refuses, it moves
+back.
+
+**Stop** starts no new work and moves every folder that is not yet deleted back
+to its place. A folder that cannot be deleted (for example root-owned files)
+also moves back and is reported. Commands time out after 30 minutes.
 
 Nested selections are counted and cleaned once: a `node_modules` inside a
 selected worktree goes with the worktree.

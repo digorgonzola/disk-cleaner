@@ -35,6 +35,9 @@ enum ProcessRunner {
         environment: [String: String]? = nil,
         timeout: Duration = .seconds(60)
     ) async throws -> ProcessOutput {
+        // Cancellation only kills a running process, so a cancelled caller must not start one:
+        // its result would be read as if the task had run normally.
+        try Task.checkCancellation()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
