@@ -16,7 +16,10 @@ concurrency:
 
 jobs:
   test:
-    # Drafts are work in progress; mark a PR ready to request CI.
+    # The check name that required-checks.yml waits for.
+    name: Test & Build
+    # Drafts are work in progress; mark a PR ready to request CI. required-checks.yml
+    # fails while a PR is a draft, so this skip never counts as a pass.
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     runs-on: macos-26
     timeout-minutes: 20

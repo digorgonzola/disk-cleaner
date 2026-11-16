@@ -1,0 +1,58 @@
+name: Required Checks
+
+# Single-context aggregation gate for the branch ruleset: the ruleset requires only
+# "Required Checks", and this job waits for the real checks listed below.
+#
+# pull_request_target loads this workflow AND the vendored action from the base
+# branch (main), so a PR cannot disable or weaken the gate in its own diff. `$/`
+# resolves the action at the running workflow's commit with no checkout, and the
+# action only reads the Checks API for the PR head SHA from the event payload.
+# Do NOT add a checkout of the PR head or any `run:` of PR-supplied code.
+#
+# Drafts: swift.yml skips its job for drafts, and the action counts an all-skipped
+# check as a pass. So this gate fails outright while the PR is a draft, and re-runs
+# on ready_for_review, where the action holds the draft's stale skip through the
+# grace window until the real run registers.
+
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] base-branch gate; action loaded via $/ from base commit, no checkout, no PR code executed (see header)
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - edited # the PR title check re-runs on title edits
+
+# github.ref is the base ref under pull_request_target, so key on the PR number and
+# head SHA: PRs never cancel each other, and a stale SHA never cancels the current one.
+concurrency:
+  group: required-checks-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read # fetch the `$/` gate action from this repo
+  checks: read # read check-runs on the head SHA
+
+jobs:
+  required-checks:
+    name: Required Checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Fail while draft (real checks are skipped for drafts)
+        if: github.event.pull_request.draft == true
+        run: |
+          echo "::error title=Draft PR::Tests are skipped for draft PRs, so the Required Checks gate does not pass while this PR is a draft. Mark it 'Ready for review'."
+          exit 1
+
+      - name: Wait for required checks
+        uses: $/.github/actions/wait-for-required-checks
+        with:
+          # Exact check-run names. Add new gating checks here as workflows grow.
+          required-checks: |
+            Test & Build
+            PR title
+          # macOS runners can take a while to be queued.
+          grace-seconds: "180"

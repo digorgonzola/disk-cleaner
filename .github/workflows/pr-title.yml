@@ -16,6 +16,8 @@ permissions: {}
 
 jobs:
   pr-title:
+    # The check name that required-checks.yml waits for.
+    name: PR title
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
