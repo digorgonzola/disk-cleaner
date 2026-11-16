@@ -7,12 +7,19 @@ public struct WorktreeInfo: Sendable, Hashable {
     public let problems: [String]?
     /// Things removal deletes that are not obviously build output. Selectable, not preselected.
     public let warnings: [String]
+    /// Checked-out submodules make git refuse a plain `worktree remove`; the cleaner then
+    /// uses `--force`, but only after a fresh inspection finds no problems.
+    public let hasSubmodules: Bool
 
-    public init(repoPath: String, branch: String? = nil, problems: [String]? = nil, warnings: [String] = []) {
+    public init(
+        repoPath: String, branch: String? = nil, problems: [String]? = nil,
+        warnings: [String] = [], hasSubmodules: Bool = false
+    ) {
         self.repoPath = repoPath
         self.branch = branch
         self.problems = problems
         self.warnings = warnings
+        self.hasSubmodules = hasSubmodules
     }
 }
 

@@ -34,9 +34,16 @@ days, and clean worktrees not modified for 14 days.
    rules marked `canDeleteWithoutCommand: false` (pnpm store, VM disks).
 2. Claude Code worktrees are removed with `git worktree remove` without
    `--force`. The branch and its commits stay in the repository. A worktree
-   cannot be selected when it has uncommitted or untracked changes, ignored files
-   that are not build output (`.env`, local state), or a detached HEAD whose
-   commits are on no branch.
+   cannot be selected when it has uncommitted or untracked changes, or a
+   detached HEAD whose commits are on no branch. A worktree with ignored files
+   that are not build output (`.env`, local state) can be selected, but is not
+   preselected and is flagged in the confirm sheet.
+   Git refuses to remove a worktree with checked-out submodules. The submodules'
+   git data lives inside the worktree's admin folder and goes with it, so the
+   app uses `--force` only when every submodule (nested ones too) has no
+   uncommitted changes, no stashes, and no commits missing from a remote. It
+   checks again just before removal, so changes made after the scan still
+   block it.
    A `.terragrunt-cache` that holds a local `terraform.tfstate` cannot be
    selected either.
    Commands time out after 30 minutes, and **Stop** cancels a clean between items.

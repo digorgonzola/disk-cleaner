@@ -11,5 +11,6 @@ Native macOS SwiftUI app (Swift 6, SwiftPM, macOS 14+) that finds and cleans dev
 ## Rules for this codebase
 
 - New caches go in `RuleCatalog.swift` as data. Do not add per-rule logic in the cleaner.
-- Never weaken `SafePath.isDeletable`, the no-`--force` worktree removal, or `canDeleteWithoutCommand: false` on live data (VM disks, pnpm store). Add a test for any change to them.
+- Never weaken `SafePath`, the worktree checks in `WorktreeInspector`, the re-inspection before `git worktree remove --force` (submodule worktrees only), or `canDeleteWithoutCommand: false` on live data (VM disks, pnpm store). Add a test for any change to them.
+- Test git fixtures pass `-c commit.gpgsign=false`: the developer's global config signs commits through 1Password.
 - Never run the clean path against the real home folder from tests or scripts. Tests use a temp-folder fixture.

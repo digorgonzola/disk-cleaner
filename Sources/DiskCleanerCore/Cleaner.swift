@@ -66,21 +66,31 @@ public struct Cleaner: Sendable {
 
     // MARK: Strategies
 
-    private func removeWorktree(_ item: ScanItem) async -> CleanOutcome {
+    func removeWorktree(_ item: ScanItem) async -> CleanOutcome {
         let label = "Worktree \(displayPath(item.path))"
         if let blocker = item.blocker {
             return CleanOutcome(label: label, error: CleanError.blocked(path: item.path, reason: blocker).errorDescription, log: "")
         }
-        guard let repo = item.worktree?.repoPath else {
-            return CleanOutcome(label: label, error: "Unknown repository", log: "")
+        guard let repo = item.worktree?.repoPath, SafePath.isClaudeWorktree(item.path, repoPath: repo, homePath: homePath) else {
+            return CleanOutcome(label: label, error: CleanError.unsafePath(path: item.path).errorDescription, log: "")
         }
-        // No --force: git itself refuses a worktree that gained changes since the scan.
-        let output = try? await ProcessRunner.run("/usr/bin/git", ["-C", repo, "worktree", "remove", item.path])
+
+        // Inspect again right before removal: the scan may be minutes or hours old.
+        let fresh = await WorktreeInspector.inspect(path: item.path, repoPath: repo, rules: Array(rules.values))
+        if let problems = fresh.problems, !problems.isEmpty {
+            let reason = "changed since the scan: " + problems.joined(separator: "; ")
+            return CleanOutcome(label: label, error: CleanError.blocked(path: item.path, reason: reason).errorDescription, log: "")
+        }
+
+        // Without submodules, no --force: git itself then refuses a worktree with changes.
+        // With submodules git always refuses, so --force is used only after the checks above.
+        let arguments = ["-C", repo, "worktree", "remove"] + (fresh.hasSubmodules ? ["--force"] : []) + [item.path]
+        let output = try? await ProcessRunner.run("/usr/bin/git", arguments, timeout: .seconds(600))
         guard let output, output.succeeded else {
             let message = output?.stderr ?? "git could not start"
             return CleanOutcome(label: label, error: message.trimmingCharacters(in: .whitespacesAndNewlines), log: "")
         }
-        return CleanOutcome(label: label, error: nil, log: "git worktree remove \(item.path)")
+        return CleanOutcome(label: label, error: nil, log: "git " + arguments.joined(separator: " "))
     }
 
     private func runCommand(_ command: String, rule: CleanupRule, items: [ScanItem]) async -> CleanOutcome {
@@ -173,5 +183,14 @@ public enum SafePath {
         case .claudeWorktrees:
             return false
         }
+    }
+
+    /// A worktree may only be removed when it is a direct child of `<repo>/.claude/worktrees`
+    /// inside the home folder. Worktrees are never deleted with `removeItem`, only through git.
+    public static func isClaudeWorktree(_ path: String, repoPath: String, homePath: String) -> Bool {
+        let parent = (path as NSString).deletingLastPathComponent
+        return (path as NSString).standardizingPath == path
+            && path.hasPrefix(homePath + "/")
+            && parent == repoPath + "/.claude/worktrees"
     }
 }

@@ -8,7 +8,7 @@ public enum RuleCatalog {
     static let worktrees: [CleanupRule] = [
         CleanupRule(
             id: "claude-worktrees", name: "Claude Code worktrees", category: .worktrees,
-            detail: "Git worktrees in <repo>/.claude/worktrees, removed with `git worktree remove`. The branch and its commits stay in the repo. Worktrees with uncommitted changes, ignored files that are not build output (.env, local state), or a detached HEAD with commits on no branch cannot be selected.",
+            detail: "Git worktrees in <repo>/.claude/worktrees, removed with `git worktree remove`. The branch and its commits stay in the repo. Worktrees with uncommitted changes or a detached HEAD with commits on no branch cannot be selected. Worktrees with submodules are removed with --force, but only when every submodule is clean, has no stashes, and has all its commits on a remote.",
             risk: .caution, target: .claudeWorktrees),
     ]
 

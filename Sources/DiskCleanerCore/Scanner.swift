@@ -232,22 +232,34 @@ enum WorktreeInspector {
 
         var problems: [String] = []
         var warnings: [String] = []
-        let submodules = await initializedSubmodules(path)
-        if !submodules.isEmpty {
-            problems.append("Has submodules (\(submodules.prefix(2).joined(separator: ", "))); git will not remove it")
+        let submodules: [Submodule]
+        do {
+            submodules = try await initializedSubmodules(path)
+        } catch {
+            return WorktreeInfo(repoPath: repoPath, branch: branch, problems: ["git submodule status failed"])
+        }
+        let submodulePaths = Set(submodules.map(\.path))
+
+        let summary = summarize(status.stdout, prefix: "", skipping: submodulePaths, folderNames: folderNames)
+        if !summary.changed.isEmpty {
+            problems.append("\(summary.changed.count) uncommitted file\(summary.changed.count == 1 ? "" : "s")")
+        }
+        var ignored = summary.ignored
+        // A changed gitlink only means the submodule moved to another commit. The commit itself
+        // is checked below; what is lost is the uncommitted pointer, so warn instead of block.
+        let movedPointers = summary.changedSubmodules
+        if !movedPointers.isEmpty {
+            warnings.append("Uncommitted submodule pointer: \(movedPointers.prefix(2).joined(separator: ", "))")
         }
 
-        let lines = status.stdout.split(separator: "\n").map(String.init)
-        let changed = lines.filter { !$0.hasPrefix("!! ") }
-            .map { String($0.dropFirst(3)) }
-            .filter { !submodules.contains($0) }
-        if !changed.isEmpty { problems.append("\(changed.count) uncommitted file\(changed.count == 1 ? "" : "s")") }
+        for submodule in submodules {
+            let check = await inspectSubmodule(submodule, worktreePath: path, allSubmodules: submodulePaths, folderNames: folderNames)
+            problems += check.problems
+            ignored += check.ignored
+        }
 
-        let keptIgnored = lines.filter { $0.hasPrefix("!! ") }
-            .map { String($0.dropFirst(3)).trimmingCharacters(in: CharacterSet(charactersIn: "/\"")) }
-            .filter { !isRebuildable($0, folderNames: folderNames) }
-        if !keptIgnored.isEmpty {
-            warnings.append("Also deletes ignored \(keptIgnored.prefix(3).joined(separator: ", "))\(keptIgnored.count > 3 ? "…" : "")")
+        if !ignored.isEmpty {
+            warnings.append("Also deletes ignored \(ignored.prefix(3).joined(separator: ", "))\(ignored.count > 3 ? "…" : "")")
         }
 
         if branch == "HEAD" {
@@ -256,16 +268,83 @@ enum WorktreeInspector {
                 problems.append("Detached HEAD with commits on no branch")
             }
         }
-        return WorktreeInfo(repoPath: repoPath, branch: branch, problems: problems, warnings: warnings)
+        return WorktreeInfo(
+            repoPath: repoPath, branch: branch, problems: problems, warnings: warnings,
+            hasSubmodules: !submodules.isEmpty
+        )
     }
 
-    /// Paths of submodules checked out in the worktree. `git worktree remove` refuses these.
-    private static func initializedSubmodules(_ path: String) async -> [String] {
-        guard let output = try? await git(path, "submodule", "status"), output.succeeded else { return [] }
-        // Lines start with "-" when the submodule is not initialized.
-        return output.stdout.split(separator: "\n")
-            .filter { !$0.hasPrefix("-") }
-            .compactMap { $0.split(separator: " ").dropFirst().first.map(String.init) }
+    struct Submodule: Equatable {
+        let path: String
+        let hasConflict: Bool
+    }
+
+    /// Checked-out submodules, nested ones included, as paths relative to the worktree.
+    /// - Throws: `CleanError.commandFailed` when git fails, so a failed listing never reads as "none".
+    static func initializedSubmodules(_ path: String) async throws -> [Submodule] {
+        guard FileManager.default.fileExists(atPath: path + "/.gitmodules") else { return [] }
+        let output = try await git(path, "submodule", "status", "--recursive")
+        guard output.succeeded else { throw CleanError.commandFailed(command: "git submodule status", status: output.status, output: output.stderr) }
+        // Each line is "<state><sha> <path> (<describe>)"; state "-" means not checked out.
+        return output.stdout.split(separator: "\n").compactMap { line in
+            guard let state = line.first, state != "-" else { return nil }
+            let fields = line.dropFirst().split(separator: " ")
+            guard fields.count >= 2 else { return nil }
+            return Submodule(path: String(fields[1]), hasConflict: state == "U")
+        }
+    }
+
+    private struct StatusSummary {
+        var changed: [String] = []
+        var changedSubmodules: [String] = []
+        var ignored: [String] = []
+    }
+
+    /// Splits `git status --porcelain --ignored` output. Paths are reported relative to the
+    /// worktree by adding `prefix`, so nested submodule entries can be recognised.
+    private static func summarize(_ output: String, prefix: String, skipping submodules: Set<String>, folderNames: Set<String>) -> StatusSummary {
+        var summary = StatusSummary()
+        for line in output.split(separator: "\n").map(String.init) {
+            let path = prefix + String(line.dropFirst(3)).trimmingCharacters(in: CharacterSet(charactersIn: "/\""))
+            if line.hasPrefix("!! ") {
+                if !isRebuildable(path, folderNames: folderNames) { summary.ignored.append(path) }
+            } else if submodules.contains(path) {
+                summary.changedSubmodules.append(path)
+            } else {
+                summary.changed.append(path)
+            }
+        }
+        return summary
+    }
+
+    /// A linked worktree keeps its submodules' git data under `.git/worktrees/<name>/modules`,
+    /// which `git worktree remove --force` deletes. Anything not on a remote is lost with it.
+    private static func inspectSubmodule(
+        _ submodule: Submodule, worktreePath: String, allSubmodules: Set<String>, folderNames: Set<String>
+    ) async -> (problems: [String], ignored: [String]) {
+        let name = submodule.path
+        let fullPath = worktreePath + "/" + name
+        if submodule.hasConflict { return (["Submodule \(name) has merge conflicts"], []) }
+
+        guard let status = try? await git(fullPath, "status", "--porcelain", "--ignored"), status.succeeded else {
+            return (["Submodule \(name): git status failed"], [])
+        }
+        let summary = summarize(status.stdout, prefix: name + "/", skipping: allSubmodules, folderNames: folderNames)
+        var problems: [String] = []
+        if !summary.changed.isEmpty {
+            problems.append("Submodule \(name): \(summary.changed.count) uncommitted file\(summary.changed.count == 1 ? "" : "s")")
+        }
+
+        // Commits reachable from HEAD or a local branch but from no remote-tracking ref.
+        let unpushed = try? await git(fullPath, "rev-list", "--max-count=1", "HEAD", "--branches", "--not", "--remotes")
+        if unpushed?.succeeded != true || unpushed?.stdout.isEmpty == false {
+            problems.append("Submodule \(name) has commits on no remote")
+        }
+        let stashes = try? await git(fullPath, "stash", "list")
+        if stashes?.succeeded != true || stashes?.stdout.isEmpty == false {
+            problems.append("Submodule \(name) has stashes")
+        }
+        return (problems, summary.ignored)
     }
 
     static func isRebuildable(_ path: String, folderNames: Set<String>) -> Bool {

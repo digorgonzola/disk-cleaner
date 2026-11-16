@@ -129,7 +129,7 @@ struct SafeguardTests {
 
     @discardableResult
     func git(_ dir: URL, _ args: String...) async throws -> ProcessOutput {
-        let output = try await ProcessRunner.run("/usr/bin/git", ["-C", dir.path, "-c", "user.email=t@t", "-c", "user.name=t"] + args)
+        let output = try await ProcessRunner.run("/usr/bin/git", ["-C", dir.path, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"] + args)
         #expect(output.succeeded, "git \(args): \(output.stderr)")
         return output
     }
@@ -196,5 +196,87 @@ struct SafeguardTests {
         #expect(output.timedOut)
         #expect(!output.succeeded)
         #expect(Date().timeIntervalSince(started) < 5)
+    }
+}
+
+struct SubmoduleWorktreeTests {
+    @discardableResult
+    func git(_ dir: URL, _ args: String...) async throws -> ProcessOutput {
+        let base = ["-C", dir.path, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "protocol.file.allow=always", "-c", "commit.gpgsign=false"]
+        let output = try await ProcessRunner.run("/usr/bin/git", base + args)
+        #expect(output.succeeded, "git \(args): \(output.stderr)")
+        return output
+    }
+
+    /// upstream repo -> main repo with it as a submodule -> three worktrees with the submodule checked out.
+    func makeFixture() async throws -> (root: URL, main: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("dc-sub-\(UUID().uuidString)")
+        let upstream = root.appendingPathComponent("upstream")
+        let main = root.appendingPathComponent("main")
+        for dir in [upstream, main] { try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true) }
+        try await git(upstream, "init", "-q", "-b", "main")
+        try "hello".write(to: upstream.appendingPathComponent("README"), atomically: true, encoding: .utf8)
+        try await git(upstream, "add", ".")
+        try await git(upstream, "commit", "-qm", "upstream")
+        try await git(main, "init", "-q", "-b", "main")
+        try await git(main, "submodule", "add", "-q", upstream.path, "lib")
+        try await git(main, "commit", "-qm", "add lib")
+        for name in ["ok", "unpushed", "dirty"] {
+            let worktree = main.appendingPathComponent(".claude/worktrees/\(name)")
+            try await git(main, "worktree", "add", "-q", worktree.path, "-b", name)
+            try await git(worktree, "submodule", "update", "-q", "--init")
+        }
+        let worktrees = main.appendingPathComponent(".claude/worktrees")
+        try await git(worktrees.appendingPathComponent("unpushed/lib"), "commit", "-q", "--allow-empty", "-m", "local only")
+        try "changed".write(to: worktrees.appendingPathComponent("dirty/lib/README"), atomically: true, encoding: .utf8)
+        return (root, main)
+    }
+
+    @Test func inspectsSubmodules() async throws {
+        let (root, main) = try await makeFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worktrees = main.path + "/.claude/worktrees/"
+        let rules = RuleCatalog.all
+
+        let ok = await WorktreeInspector.inspect(path: worktrees + "ok", repoPath: main.path, rules: rules)
+        #expect(ok.problems == [])
+        #expect(ok.hasSubmodules)
+
+        let unpushed = await WorktreeInspector.inspect(path: worktrees + "unpushed", repoPath: main.path, rules: rules)
+        #expect(unpushed.problems?.contains("Submodule lib has commits on no remote") == true)
+        #expect(unpushed.warnings.contains { $0.contains("submodule pointer") })
+
+        let dirty = await WorktreeInspector.inspect(path: worktrees + "dirty", repoPath: main.path, rules: rules)
+        #expect(dirty.problems == ["Submodule lib: 1 uncommitted file"])
+    }
+
+    @Test func removesCleanSubmoduleWorktreeAndRechecksStaleScans() async throws {
+        let (root, main) = try await makeFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let worktrees = main.path + "/.claude/worktrees/"
+        let cleaner = Cleaner(homePath: root.path)
+
+        let ok = ScanItem(ruleID: "claude-worktrees", path: worktrees + "ok",
+                          worktree: WorktreeInfo(repoPath: main.path, problems: [], hasSubmodules: true))
+        let removed = await cleaner.removeWorktree(ok)
+        #expect(removed.succeeded, "\(removed.error ?? "")")
+        #expect(!FileManager.default.fileExists(atPath: worktrees + "ok"))
+        try await git(main, "rev-parse", "--verify", "-q", "ok")
+
+        // A scan result that predates the local-only commit must not lead to a forced removal.
+        let stale = ScanItem(ruleID: "claude-worktrees", path: worktrees + "unpushed",
+                             worktree: WorktreeInfo(repoPath: main.path, problems: [], hasSubmodules: true))
+        let refused = await cleaner.removeWorktree(stale)
+        #expect(!refused.succeeded)
+        #expect(FileManager.default.fileExists(atPath: worktrees + "unpushed/lib"))
+    }
+
+    @Test func worktreePathMustBeDirectChildOfClaudeWorktrees() {
+        let home = "/Users/t"
+        let repo = "/Users/t/repos/app"
+        #expect(SafePath.isClaudeWorktree("/Users/t/repos/app/.claude/worktrees/x", repoPath: repo, homePath: home))
+        #expect(!SafePath.isClaudeWorktree("/Users/t/repos/app", repoPath: repo, homePath: home))
+        #expect(!SafePath.isClaudeWorktree("/Users/t/repos/app/.claude/worktrees/x/y", repoPath: repo, homePath: home))
+        #expect(!SafePath.isClaudeWorktree("/opt/app/.claude/worktrees/x", repoPath: "/opt/app", homePath: home))
     }
 }
