@@ -38,7 +38,7 @@ permissions:
 jobs:
   required-checks:
     name: Required Checks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - name: Fail while draft (real checks are skipped for drafts)
