@@ -77,6 +77,7 @@ struct SettingsView: View {
             }
         }
         .padding([.horizontal, .top], 20)
+        .onDisappear { if updater.manualResultPlace == .settings { updater.clearManualResult() } }
         ProjectRootsView()
     }
 }

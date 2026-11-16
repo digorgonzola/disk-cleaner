@@ -66,6 +66,8 @@ final class Updater {
 
     /// Runs a check the user asked for and shows its result in `place`.
     func checkNow(showingResultIn place: ResultPlace) async {
+        // Clear first: an old answer must not flash in the new place.
+        manualResult = nil
         manualResultPlace = place
         await check(userInitiated: true)
     }
@@ -106,6 +108,8 @@ final class Updater {
     }
 
     func dismiss() { available = nil }
+
+    func clearManualResult() { manualResult = nil }
 
     func openDownload() {
         guard let available else { return }
