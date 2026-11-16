@@ -166,19 +166,26 @@ public enum RuleCatalog {
     static let containers: [CleanupRule] = [
         CleanupRule(
             id: "podman", name: "Podman machine", category: .containers,
-            detail: "The Podman VM disk image. Cleaning runs `podman system prune --all` (unused images, stopped containers, build cache), then `fstrim` so the host gets the space back. The size shown is about what `podman system df` says the prune can free, not the disk image. Volumes are kept: check them with `podman volume ls`. The machine must be running.",
+            detail: "The Podman VM disk image. Cleaning runs `podman system prune --all` (unused images, stopped containers, build cache), deletes archived journal logs in the VM down to about 100 MB, then runs `fstrim` so the host gets the space back. The size shown is about what `podman system df` says the prune can free, plus the journal logs above 100 MB. It is not the disk image size. Volumes are kept: check them with `podman volume ls`. The machine must be running.",
             risk: .caution, target: .homePaths([".local/share/containers/podman/machine"]),
-            cleanCommand: "podman system prune --all --force && podman machine ssh -- sudo fstrim -av",
+            // The trim runs also when the journal step fails: the prune's space must still
+            // go back to the host. The journal step's status is kept for the outcome.
+            cleanCommand: "podman system prune --all --force && podman machine ssh -- "
+                + "'sudo journalctl --rotate --vacuum-size=100M; s=$?; sudo fstrim -av && exit $s'",
             canDeleteWithoutCommand: false,
-            reclaimable: ReclaimableQuery(command: "exec podman system df --format '{{.Type}}={{.RawReclaimable}}'",
-                                          excludedLabels: ["Local Volumes"])),
+            // Allocated size, which is what the vacuum counts against 100M (1024-based).
+            reclaimable: ReclaimableQuery(
+                command: "podman machine ssh -- "
+                    + "'j=$(sudo du -s --block-size=1 /var/log/journal | cut -f1); echo Journal=$(( j > 104857600 ? j - 104857600 : 0 ))'"
+                    + " && podman system df --format '{{.Type}}={{.RawReclaimable}}'",
+                excludedLabels: ["Local Volumes"])),
         CleanupRule(
             id: "docker-desktop", name: "Docker Desktop", category: .containers,
             detail: "The Docker Desktop VM disk. Cleaning runs `docker system prune --all` against the desktop-linux context: stopped containers, unused images and networks, build cache. The size shown is about what `docker system df` says the prune can free, not the disk image. Volumes are kept. Docker Desktop must be running.",
             risk: .caution, target: .homePaths(["Library/Containers/com.docker.docker/Data/vms"]),
             cleanCommand: "docker --context desktop-linux system prune --all --force",
             canDeleteWithoutCommand: false,
-            reclaimable: ReclaimableQuery(command: "exec docker --context desktop-linux system df --format '{{.Type}}={{.Reclaimable}}'",
+            reclaimable: ReclaimableQuery(command: "docker --context desktop-linux system df --format '{{.Type}}={{.Reclaimable}}'",
                                           excludedLabels: ["Local Volumes"])),
     ]
 

@@ -23,6 +23,8 @@ private final class ProcessHandle: @unchecked Sendable {
     let process: Process
     init(_ process: Process) { self.process = process }
 
+    /// `Process` starts the child in its own process group and `terminate()` signals that
+    /// group, so the children of a shell (`a && b`) stop with it.
     func terminate() { if process.isRunning { process.terminate() } }
 }
 

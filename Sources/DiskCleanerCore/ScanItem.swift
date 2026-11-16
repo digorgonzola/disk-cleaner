@@ -103,3 +103,21 @@ public enum PathOverlap {
         path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
     }
 }
+
+public enum CleanReport {
+    /// How much smaller the cleaned folders are on disk. Nested paths count once, as part of
+    /// the outermost one.
+    /// - Parameters:
+    ///   - before: Size of each cleaned path when the clean started.
+    ///   - after: Size of each path that still exists after the clean. A missing path is gone.
+    public static func removedBytes(before: [String: Int64], after: [String: Int64]) -> Int64 {
+        PathOverlap.outermost(Array(before.keys)).reduce(0) { total, path in
+            // A missing outer folder can still hold nested ones that stayed (a worktree that
+            // git refused to remove, with its build output moved back).
+            let remaining = after[path] ?? PathOverlap.outermost(after.keys.filter { $0.hasPrefix(path + "/") })
+                .reduce(0) { $0 + (after[$1] ?? 0) }
+            // A folder that grew during the clean (another app writing) counts as 0, not less.
+            return total + max((before[path] ?? 0) - remaining, 0)
+        }
+    }
+}
