@@ -92,31 +92,17 @@ public struct Scanner: Sendable {
 
     private func measure(_ items: [ScanItem], _ continuation: AsyncStream<ScanEvent>.Continuation) async {
         let protected = Dictionary(uniqueKeysWithValues: rules.map { ($0.id, $0.protectedFileNames) })
-        await forEachConcurrently(items) { item in
+        await forEachConcurrently(items, width: concurrency) { item in
             let usage = DiskUsage.usage(of: item.path, protectedNames: protected[item.ruleID] ?? [])
             continuation.yield(.measured(path: item.path, usage: usage))
         }
     }
 
     private func inspectWorktrees(_ items: [ScanItem], _ continuation: AsyncStream<ScanEvent>.Continuation) async {
-        await forEachConcurrently(items) { item in
+        await forEachConcurrently(items, width: concurrency) { item in
             guard let repo = item.worktree?.repoPath else { return }
             let info = await WorktreeInspector.inspect(path: item.path, repoPath: repo, rules: rules)
             continuation.yield(.worktreeInspected(path: item.path, info: info))
-        }
-    }
-
-    private func forEachConcurrently(_ items: [ScanItem], _ body: @escaping @Sendable (ScanItem) async -> Void) async {
-        await withTaskGroup(of: Void.self) { group in
-            var iterator = items.makeIterator()
-            for _ in 0..<concurrency {
-                guard let item = iterator.next() else { break }
-                group.addTask { await body(item) }
-            }
-            while await group.next() != nil {
-                guard !Task.isCancelled, let item = iterator.next() else { continue }
-                group.addTask { await body(item) }
-            }
         }
     }
 
@@ -208,8 +194,34 @@ struct ProjectWalker {
     }
 }
 
+/// One entry of `git status --porcelain -z`. `-z` output is never quoted, so paths with
+/// spaces, quotes or non-ASCII characters come through as they are.
+struct PorcelainEntry: Equatable {
+    let code: String
+    let path: String
+
+    var isIgnored: Bool { code == "!!" }
+
+    static func parse(_ output: String) -> [PorcelainEntry] {
+        var entries: [PorcelainEntry] = []
+        // Split on bytes: a path that starts with a combining mark would merge with the
+        // separator space as one Character and be cut short.
+        var fields = output.utf8.split(separator: 0, omittingEmptySubsequences: true).makeIterator()
+        while let field = fields.next() {
+            guard field.count > 3 else { continue }
+            let code = String(decoding: field.prefix(2), as: UTF8.self)
+            var path = String(decoding: field.dropFirst(3), as: UTF8.self)
+            if path.hasSuffix("/") { path.removeLast() }
+            entries.append(PorcelainEntry(code: code, path: path))
+            // A rename or copy is followed by a second field: the original path.
+            if code.contains("R") || code.contains("C") { _ = fields.next() }
+        }
+        return entries
+    }
+}
+
 enum WorktreeInspector {
-    /// Ignored paths that are only build output, so losing them with the worktree is fine.
+    /// Ignored folders that are only build output, so losing them with the worktree is fine.
     static let rebuildableNames: Set<String> = [
         "dist", "build", "out", "coverage", ".cache", ".DS_Store", ".eslintcache",
     ]
@@ -221,17 +233,33 @@ enum WorktreeInspector {
             guard case .projectFolder(let name, _, _) = rule.target else { return nil }
             return name
         })
-        let branchOutput = try? await git(path, "rev-parse", "--abbrev-ref", "HEAD")
-        let branch = branchOutput?.succeeded == true
-            ? branchOutput?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-
-        guard let status = try? await git(path, "status", "--porcelain", "--ignored"), status.succeeded else {
-            // An unreadable worktree counts as dirty so the app never removes it blind.
-            return WorktreeInfo(repoPath: repoPath, branch: branch, problems: ["git status failed"])
-        }
+        let protectedFolders = Dictionary(rules.compactMap { rule -> (String, Set<String>)? in
+            guard case .projectFolder(let name, _, _) = rule.target, !rule.protectedFileNames.isEmpty else { return nil }
+            return (name, rule.protectedFileNames)
+        }, uniquingKeysWith: { $0.union($1) })
+        let allProtectedNames = protectedFolders.values.reduce(into: Set<String>()) { $0.formUnion($1) }
 
         var problems: [String] = []
         var warnings: [String] = []
+
+        // Every git failure is a problem: a missing answer must never read as "all clear".
+        guard let branchOutput = try? await git(path, "rev-parse", "--abbrev-ref", "HEAD"), branchOutput.succeeded else {
+            return WorktreeInfo(repoPath: repoPath, problems: ["git rev-parse failed"])
+        }
+        let branch = branchOutput.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // --ignored=matching with -uall lists an ignored folder nested in untracked folders
+        // (live/unit/.terragrunt-cache) on its own line, instead of folding it into "live/".
+        guard let status = try? await git(path, "status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=all"),
+              status.succeeded
+        else {
+            return WorktreeInfo(repoPath: repoPath, branch: branch, problems: ["git status failed"])
+        }
+
+        if let lock = await lockReason(worktree: path, repoPath: repoPath) {
+            problems.append(lock)
+        }
+
         let submodules: [Submodule]
         do {
             submodules = try await initializedSubmodules(path)
@@ -240,22 +268,38 @@ enum WorktreeInspector {
         }
         let submodulePaths = Set(submodules.map(\.path))
 
-        let summary = summarize(status.stdout, prefix: "", skipping: submodulePaths, folderNames: folderNames)
+        let summary = summarize(PorcelainEntry.parse(status.stdout), prefix: "", skipping: submodulePaths, folderNames: folderNames)
         if !summary.changed.isEmpty {
             problems.append("\(summary.changed.count) uncommitted file\(summary.changed.count == 1 ? "" : "s")")
         }
         var ignored = summary.ignored
+        var rebuildable = summary.rebuildable
         // A changed gitlink only means the submodule moved to another commit. The commit itself
         // is checked below; what is lost is the uncommitted pointer, so warn instead of block.
-        let movedPointers = summary.changedSubmodules
-        if !movedPointers.isEmpty {
-            warnings.append("Uncommitted submodule pointer: \(movedPointers.prefix(2).joined(separator: ", "))")
+        if !summary.changedSubmodules.isEmpty {
+            warnings.append("Uncommitted submodule pointer: \(summary.changedSubmodules.prefix(2).joined(separator: ", "))")
         }
 
         for submodule in submodules {
             let check = await inspectSubmodule(submodule, worktreePath: path, allSubmodules: submodulePaths, folderNames: folderNames)
             problems += check.problems
             ignored += check.ignored
+            rebuildable += check.rebuildable
+        }
+
+        // Ignored folders go with the worktree, but local Terraform state is real data. Look
+        // inside protected folders (.terragrunt-cache), generic build folders and any other
+        // ignored entry, where git can fold a nested .terragrunt-cache into one line. Tool
+        // folders such as node_modules are skipped: they are large and hold no user state.
+        for relative in rebuildable + ignored {
+            let name = (relative as NSString).lastPathComponent
+            let isToolFolder = folderNames.contains(name) && protectedFolders[name] == nil
+            guard !isToolFolder else { continue }
+            let folder = path + "/" + relative
+            let found = await runBlocking { DiskUsage.usage(of: folder, protectedNames: allProtectedNames).protectedFiles }
+            if let first = found.first {
+                problems.append("Holds local state: \(relative)/\(first)")
+            }
         }
 
         if !ignored.isEmpty {
@@ -270,8 +314,35 @@ enum WorktreeInspector {
         }
         return WorktreeInfo(
             repoPath: repoPath, branch: branch, problems: problems, warnings: warnings,
-            hasSubmodules: !submodules.isEmpty
+            hasSubmodules: !submodules.isEmpty, rebuildablePaths: rebuildable
         )
+    }
+
+    /// The lock reason when `git worktree lock` was used on this worktree; git refuses to
+    /// remove a locked worktree. A failed listing also counts as locked.
+    private static func lockReason(worktree: String, repoPath: String) async -> String? {
+        guard let output = try? await git(repoPath, "worktree", "list", "--porcelain", "-z"), output.succeeded else {
+            return "git worktree list failed"
+        }
+        // git prints resolved paths (/private/var/… for /var/…).
+        let target = realPath(worktree)
+        // Records are separated by an empty field; each field is "key value".
+        var current: String?
+        for field in output.stdout.split(separator: "\0", omittingEmptySubsequences: false) {
+            if field.isEmpty { current = nil; continue }
+            if field.hasPrefix("worktree ") { current = realPath(String(field.dropFirst(9))) }
+            if current == target, field == "locked" || field.hasPrefix("locked ") {
+                let reason = field.dropFirst(6).trimmingCharacters(in: .whitespaces)
+                return reason.isEmpty ? "Locked (git worktree lock)" : "Locked: \(reason)"
+            }
+        }
+        return nil
+    }
+
+    private static func realPath(_ path: String) -> String {
+        guard let resolved = Darwin.realpath(path, nil) else { return path }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     struct Submodule: Equatable {
@@ -298,16 +369,22 @@ enum WorktreeInspector {
         var changed: [String] = []
         var changedSubmodules: [String] = []
         var ignored: [String] = []
+        /// Ignored paths that are build output, relative to the worktree.
+        var rebuildable: [String] = []
     }
 
-    /// Splits `git status --porcelain --ignored` output. Paths are reported relative to the
-    /// worktree by adding `prefix`, so nested submodule entries can be recognised.
-    private static func summarize(_ output: String, prefix: String, skipping submodules: Set<String>, folderNames: Set<String>) -> StatusSummary {
+    /// Sorts porcelain entries. Paths become relative to the worktree by adding `prefix`, so
+    /// nested submodule entries can be recognised.
+    private static func summarize(_ entries: [PorcelainEntry], prefix: String, skipping submodules: Set<String>, folderNames: Set<String>) -> StatusSummary {
         var summary = StatusSummary()
-        for line in output.split(separator: "\n").map(String.init) {
-            let path = prefix + String(line.dropFirst(3)).trimmingCharacters(in: CharacterSet(charactersIn: "/\""))
-            if line.hasPrefix("!! ") {
-                if !isRebuildable(path, folderNames: folderNames) { summary.ignored.append(path) }
+        for entry in entries {
+            let path = prefix + entry.path
+            if entry.isIgnored {
+                if isRebuildable(path, folderNames: folderNames) {
+                    summary.rebuildable.append(path)
+                } else {
+                    summary.ignored.append(path)
+                }
             } else if submodules.contains(path) {
                 summary.changedSubmodules.append(path)
             } else {
@@ -321,15 +398,17 @@ enum WorktreeInspector {
     /// which `git worktree remove --force` deletes. Anything not on a remote is lost with it.
     private static func inspectSubmodule(
         _ submodule: Submodule, worktreePath: String, allSubmodules: Set<String>, folderNames: Set<String>
-    ) async -> (problems: [String], ignored: [String]) {
+    ) async -> (problems: [String], ignored: [String], rebuildable: [String]) {
         let name = submodule.path
         let fullPath = worktreePath + "/" + name
-        if submodule.hasConflict { return (["Submodule \(name) has merge conflicts"], []) }
+        if submodule.hasConflict { return (["Submodule \(name) has merge conflicts"], [], []) }
 
-        guard let status = try? await git(fullPath, "status", "--porcelain", "--ignored"), status.succeeded else {
-            return (["Submodule \(name): git status failed"], [])
+        guard let status = try? await git(fullPath, "status", "--porcelain", "-z", "--ignored=matching", "--untracked-files=all"),
+              status.succeeded
+        else {
+            return (["Submodule \(name): git status failed"], [], [])
         }
-        let summary = summarize(status.stdout, prefix: name + "/", skipping: allSubmodules, folderNames: folderNames)
+        let summary = summarize(PorcelainEntry.parse(status.stdout), prefix: name + "/", skipping: allSubmodules, folderNames: folderNames)
         var problems: [String] = []
         if !summary.changed.isEmpty {
             problems.append("Submodule \(name): \(summary.changed.count) uncommitted file\(summary.changed.count == 1 ? "" : "s")")
@@ -344,13 +423,16 @@ enum WorktreeInspector {
         if stashes?.succeeded != true || stashes?.stdout.isEmpty == false {
             problems.append("Submodule \(name) has stashes")
         }
-        return (problems, summary.ignored)
+        return (problems, summary.ignored, summary.rebuildable)
     }
 
+    /// True for ignored paths that are themselves build output: a rule's folder (node_modules)
+    /// or a generic build folder as the entry's own name, a known log or cache file, or a
+    /// per-developer settings file. A file inside a folder named "build" does not count.
     static func isRebuildable(_ path: String, folderNames: Set<String>) -> Bool {
         if disposablePaths.contains(path) { return true }
-        let components = path.split(separator: "/").map(String.init)
-        if components.contains(where: { folderNames.contains($0) || rebuildableNames.contains($0) }) { return true }
+        let name = (path as NSString).lastPathComponent
+        if folderNames.contains(name) || rebuildableNames.contains(name) { return true }
         return rebuildableSuffixes.contains { path.hasSuffix($0) }
     }
 

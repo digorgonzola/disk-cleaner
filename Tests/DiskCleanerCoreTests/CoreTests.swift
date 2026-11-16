@@ -220,6 +220,8 @@ struct SubmoduleWorktreeTests {
         try await git(upstream, "commit", "-qm", "upstream")
         try await git(main, "init", "-q", "-b", "main")
         try await git(main, "submodule", "add", "-q", upstream.path, "lib")
+        try ".claude/\nnode_modules/\n".write(to: main.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        try await git(main, "add", ".gitignore")
         try await git(main, "commit", "-qm", "add lib")
         for name in ["ok", "unpushed", "dirty"] {
             let worktree = main.appendingPathComponent(".claude/worktrees/\(name)")
@@ -227,6 +229,10 @@ struct SubmoduleWorktreeTests {
             try await git(worktree, "submodule", "update", "-q", "--init")
         }
         let worktrees = main.appendingPathComponent(".claude/worktrees")
+        // Ignored build output, which the cleaner hands to the purge pool before git runs.
+        let packageFile = worktrees.appendingPathComponent("ok/node_modules/pkg/index.js")
+        try FileManager.default.createDirectory(at: packageFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "x".write(to: packageFile, atomically: true, encoding: .utf8)
         try await git(worktrees.appendingPathComponent("unpushed/lib"), "commit", "-q", "--allow-empty", "-m", "local only")
         try "changed".write(to: worktrees.appendingPathComponent("dirty/lib/README"), atomically: true, encoding: .utf8)
         return (root, main)
@@ -258,17 +264,19 @@ struct SubmoduleWorktreeTests {
 
         let ok = ScanItem(ruleID: "claude-worktrees", path: worktrees + "ok",
                           worktree: WorktreeInfo(repoPath: main.path, problems: [], hasSubmodules: true))
-        let removed = await cleaner.removeWorktree(ok)
-        #expect(removed.succeeded, "\(removed.error ?? "")")
-        #expect(!FileManager.default.fileExists(atPath: worktrees + "ok"))
-        try await git(main, "rev-parse", "--verify", "-q", "ok")
-
         // A scan result that predates the local-only commit must not lead to a forced removal.
         let stale = ScanItem(ruleID: "claude-worktrees", path: worktrees + "unpushed",
                              worktree: WorktreeInfo(repoPath: main.path, problems: [], hasSubmodules: true))
-        let refused = await cleaner.removeWorktree(stale)
-        #expect(!refused.succeeded)
+        let outcomes = await collect(cleaner, [ok, stale])
+
+        #expect(outcomes.count == 2)
+        #expect(outcomes.first { $0.label.hasSuffix("/ok") }?.succeeded == true)
+        #expect(outcomes.first { $0.label.hasSuffix("/unpushed") }?.succeeded == false)
+        #expect(outcomes.first { $0.label.hasSuffix("/ok") }?.log.contains("node_modules: moved to the purge area") == true)
+        #expect(!FileManager.default.fileExists(atPath: worktrees + "ok"))
         #expect(FileManager.default.fileExists(atPath: worktrees + "unpushed/lib"))
+        #expect(cleaner.purger.leftovers().isEmpty)
+        try await git(main, "rev-parse", "--verify", "-q", "ok")
     }
 
     @Test func worktreePathMustBeDirectChildOfClaudeWorktrees() {
@@ -279,4 +287,266 @@ struct SubmoduleWorktreeTests {
         #expect(!SafePath.isClaudeWorktree("/Users/t/repos/app/.claude/worktrees/x/y", repoPath: repo, homePath: home))
         #expect(!SafePath.isClaudeWorktree("/opt/app/.claude/worktrees/x", repoPath: "/opt/app", homePath: home))
     }
+}
+
+/// Runs a clean and returns every outcome it reported.
+func collect(_ cleaner: Cleaner, _ items: [ScanItem]) async -> [CleanOutcome] {
+    final class Box: @unchecked Sendable {
+        let lock = NSLock()
+        var outcomes: [CleanOutcome] = []
+    }
+    let box = Box()
+    await cleaner.clean(items) { outcome in box.lock.withLock { box.outcomes.append(outcome) } }
+    return box.outcomes
+}
+
+struct ParallelCleanerTests {
+    func makeHome() throws -> URL {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("dc-clean-\(UUID().uuidString)")
+        for project in 0..<12 {
+            let base = home.appendingPathComponent("repos/p\(project)")
+            try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+            try "{}".write(to: base.appendingPathComponent("package.json"), atomically: true, encoding: .utf8)
+            for file in 0..<50 {
+                let url = base.appendingPathComponent("node_modules/pkg\(file % 5)/f\(file).js")
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try "x".write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
+        return home
+    }
+
+    @Test func cleansManyFoldersAndEmptiesThePurgeArea() async throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let items = (0..<12).map { ScanItem(ruleID: "node-modules", path: home.path + "/repos/p\($0)/node_modules") }
+        let cleaner = Cleaner(homePath: home.path)
+
+        let outcomes = await collect(cleaner, items)
+        #expect(outcomes.count == cleaner.expectedOutcomeCount(items))
+        #expect(outcomes.allSatisfy { $0.succeeded }, "\(outcomes.compactMap { $0.error })")
+        #expect(items.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+        #expect(items.allSatisfy { FileManager.default.fileExists(atPath: ($0.path as NSString).deletingLastPathComponent + "/package.json") })
+        #expect(cleaner.purger.leftovers().isEmpty)
+    }
+
+    @Test func refusesUnsafePathsWithoutStagingThem() async throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let project = ScanItem(ruleID: "node-modules", path: home.path + "/repos/p0")
+        let outcomes = await collect(Cleaner(homePath: home.path), [project])
+        #expect(outcomes.first?.succeeded == false)
+        #expect(FileManager.default.fileExists(atPath: home.path + "/repos/p0/package.json"))
+        #expect(Purger(homePath: home.path).leftovers().isEmpty)
+    }
+
+    @Test func stagesWithOneRenameAndPurgesLeftovers() async throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let purger = Purger(homePath: home.path)
+        let staged = try #require(try purger.stage(home.path + "/repos/p1/node_modules"))
+        #expect(staged.hasPrefix(purger.root + "/"))
+        #expect(!FileManager.default.fileExists(atPath: home.path + "/repos/p1/node_modules"))
+        #expect(purger.leftovers() == [staged])
+        for path in purger.leftovers() { try await purger.purge(path) }
+        #expect(purger.leftovers().isEmpty)
+    }
+}
+
+/// A plain repo (no submodules) with one worktree, for the review-finding tests.
+struct WorktreeSafetyTests {
+    @discardableResult
+    func git(_ dir: URL, _ args: String...) async throws -> ProcessOutput {
+        let base = ["-C", dir.path, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"]
+        let output = try await ProcessRunner.run("/usr/bin/git", base + args)
+        #expect(output.succeeded, "git \(args): \(output.stderr)")
+        return output
+    }
+
+    func write(_ url: URL, _ text: String = "x") throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    func makeRepo() async throws -> (root: URL, repo: URL, worktree: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("dc-wt-\(UUID().uuidString)")
+        let repo = root.appendingPathComponent("repo")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        try await git(repo, "init", "-q", "-b", "main")
+        try write(repo.appendingPathComponent(".gitignore"), ".claude/\nnode_modules/\n.terragrunt-cache/\nbuild/\n")
+        try await git(repo, "add", ".")
+        try await git(repo, "commit", "-qm", "init")
+        let worktree = repo.appendingPathComponent(".claude/worktrees/wt")
+        try await git(repo, "worktree", "add", "-q", worktree.path, "-b", "wt")
+        try write(worktree.appendingPathComponent("node_modules/pkg/index.js"))
+        return (root, repo, worktree)
+    }
+
+    @Test func nestedAndFoldedTerraformStateBlocksTheWorktree() async throws {
+        let (root, repo, worktree) = try await makeRepo()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Nested in an untracked folder, which plain --ignored folds into "live/".
+        try write(worktree.appendingPathComponent("live/unit/.terragrunt-cache/a/terraform.tfstate"), "{}")
+        let nested = await WorktreeInspector.inspect(path: worktree.path, repoPath: repo.path, rules: RuleCatalog.all)
+        #expect(nested.problems == ["Holds local state: live/unit/.terragrunt-cache/a/terraform.tfstate"])
+
+        // Inside a generic build folder, which git reports as one ignored entry.
+        try FileManager.default.removeItem(at: worktree.appendingPathComponent("live"))
+        try write(worktree.appendingPathComponent("build/.terragrunt-cache/b/terraform.tfstate"), "{}")
+        let folded = await WorktreeInspector.inspect(path: worktree.path, repoPath: repo.path, rules: RuleCatalog.all)
+        #expect(folded.problems == ["Holds local state: build/.terragrunt-cache/b/terraform.tfstate"])
+
+        // Inside a folder ignored by a plain pattern, which is not build output.
+        try FileManager.default.removeItem(at: worktree.appendingPathComponent("build"))
+        try write(worktree.appendingPathComponent(".git-exclude-test"), "")
+        let exclude = try await git(worktree, "rev-parse", "--git-path", "info/exclude").stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        try write(URL(fileURLWithPath: exclude, relativeTo: worktree), "live/\n.git-exclude-test\n")
+        try write(worktree.appendingPathComponent("live/.terragrunt-cache/c/terraform.tfstate"), "{}")
+        let plain = await WorktreeInspector.inspect(path: worktree.path, repoPath: repo.path, rules: RuleCatalog.all)
+        #expect(plain.problems == ["Holds local state: live/.terragrunt-cache/c/terraform.tfstate"])
+    }
+
+    @Test func lockedWorktreeIsBlockedAndKeepsItsBuildOutput() async throws {
+        let (root, repo, worktree) = try await makeRepo()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await git(repo, "worktree", "lock", "--reason", "agent running", worktree.path)
+
+        let info = await WorktreeInspector.inspect(path: worktree.path, repoPath: repo.path, rules: RuleCatalog.all)
+        #expect(info.problems == ["Locked: agent running"])
+
+        let item = ScanItem(ruleID: "claude-worktrees", path: worktree.path, worktree: WorktreeInfo(repoPath: repo.path, problems: []))
+        let outcomes = await collect(Cleaner(homePath: root.path), [item])
+        #expect(outcomes.count == 1 && outcomes[0].succeeded == false)
+        #expect(FileManager.default.fileExists(atPath: worktree.path + "/node_modules/pkg/index.js"))
+    }
+
+    @Test func cancelledInspectionNeverReadsAsClean() async throws {
+        let (root, repo, worktree) = try await makeRepo()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let task = Task { await WorktreeInspector.inspect(path: worktree.path, repoPath: repo.path, rules: RuleCatalog.all) }
+        task.cancel()
+        let info = await task.value
+        #expect(info.problems?.isEmpty == false)
+    }
+}
+
+struct PurgeSafetyTests {
+    func makeItems(_ count: Int, files: Int) throws -> (home: URL, items: [ScanItem]) {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("dc-purge-\(UUID().uuidString)")
+        var items: [ScanItem] = []
+        for index in 0..<count {
+            let folder = home.appendingPathComponent("repos/p\(index)/node_modules")
+            for file in 0..<files {
+                let url = folder.appendingPathComponent("d\(file % 10)/f\(file).js")
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try "x".write(to: url, atomically: true, encoding: .utf8)
+            }
+            items.append(ScanItem(ruleID: "node-modules", path: folder.path))
+        }
+        return (home, items)
+    }
+
+    @Test func stopLeavesNothingHiddenInThePurgeArea() async throws {
+        let (home, items) = try makeItems(20, files: 400)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let cleaner = Cleaner(homePath: home.path, purgeWidth: 1)
+        let task = Task { await collect(cleaner, items) }
+        try await Task.sleep(for: .milliseconds(30))
+        task.cancel()
+        let outcomes = await task.value
+
+        #expect(cleaner.purger.leftovers().isEmpty)
+        // An item may be gone only if its delete reported success and it was not kept.
+        let kept = Set(outcomes.filter { $0.label.hasPrefix("Kept ") }.map { $0.label })
+        for item in items where !FileManager.default.fileExists(atPath: item.path) {
+            #expect(!kept.contains { $0.hasSuffix(item.path.replacingOccurrences(of: home.path, with: "~")) })
+        }
+    }
+
+    @Test func undeletableFolderIsMovedBack() async throws {
+        let (home, items) = try makeItems(1, files: 3)
+        let locked = items[0].path + "/d0/f0.js"
+        defer {
+            runTool("/usr/bin/chflags", ["-R", "nouchg", home.path])
+            try? FileManager.default.removeItem(at: home)
+        }
+        runTool("/usr/bin/chflags", ["uchg", locked])
+
+        let cleaner = Cleaner(homePath: home.path)
+        let outcomes = await collect(cleaner, items)
+        #expect(outcomes.contains { $0.label.hasPrefix("Kept ") && $0.error?.contains("Moved back") == true })
+        #expect(FileManager.default.fileExists(atPath: locked))
+        #expect(cleaner.purger.leftovers().isEmpty)
+    }
+}
+
+struct ConcurrencyTests {
+    @Test func porcelainZParsesUnquotedPathsAndSkipsRenameSources() {
+        let output = "?? caf\u{e9}/a b.txt\0R  new name.txt\0old name.txt\0!! node_modules/\0!! we\"ird.log\0"
+        #expect(PorcelainEntry.parse(output) == [
+            PorcelainEntry(code: "??", path: "caf\u{e9}/a b.txt"),
+            PorcelainEntry(code: "R ", path: "new name.txt"),
+            PorcelainEntry(code: "!!", path: "node_modules"),
+            PorcelainEntry(code: "!!", path: "we\"ird.log"),
+        ])
+    }
+
+    @Test func porcelainZKeepsAPathThatStartsWithACombiningMark() {
+        let output = "?? \u{301}accent.txt\0"
+        #expect(PorcelainEntry.parse(output) == [PorcelainEntry(code: "??", path: "\u{301}accent.txt")])
+    }
+
+    @Test func crashRecoveryMovesUnconfirmedFoldersBackAndDeletesTheRest() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("dc-recover-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let keep = home.appendingPathComponent("wt/node_modules")
+        let drop = home.appendingPathComponent("p/node_modules")
+        for folder in [keep, drop] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try "x".write(to: folder.appendingPathComponent("f.js"), atomically: true, encoding: .utf8)
+        }
+        let purger = Purger(homePath: home.path)
+        _ = try purger.stage(keep.path, keepOrigin: true)
+        let staged = try purger.stage(drop.path, keepOrigin: true)
+        let confirmed = try #require(staged)
+        purger.confirmDelete(confirmed)
+
+        let failures = await purger.recoverLeftovers()
+        #expect(failures.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: keep.path + "/f.js"))
+        #expect(!FileManager.default.fileExists(atPath: drop.path))
+        #expect(!FileManager.default.fileExists(atPath: purger.root))
+    }
+
+    @Test func limiterNeverExceedsItsWidth() async {
+        final class Gauge: @unchecked Sendable {
+            let lock = NSLock()
+            var current = 0
+            var peak = 0
+            func change(_ delta: Int) { lock.withLock { current += delta; peak = max(peak, current) } }
+        }
+        let limiter = AsyncLimiter(width: 3)
+        let gauge = Gauge()
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<20 {
+                group.addTask {
+                    await limiter.acquire()
+                    gauge.change(1)
+                    try? await Task.sleep(for: .milliseconds(5))
+                    gauge.change(-1)
+                    await limiter.release()
+                }
+            }
+        }
+        #expect(gauge.peak == 3)
+    }
+}
+
+/// Runs a tool and waits; for test setup only.
+func runTool(_ path: String, _ arguments: [String]) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: path)
+    process.arguments = arguments
+    try? process.run()
+    process.waitUntilExit()
 }

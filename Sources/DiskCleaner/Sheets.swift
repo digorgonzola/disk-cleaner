@@ -55,36 +55,42 @@ struct ResultsView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
+        let failed = model.outcomes.filter { !$0.succeeded }
+        let succeeded = model.outcomes.filter(\.succeeded)
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
+            HStack(alignment: .firstTextBaseline) {
                 Text(model.isCleaning ? "Cleaning…" : "Done").font(.title2.bold())
-                if model.isCleaning { ProgressView().controlSize(.small) }
+                Text("\(model.outcomes.count.formatted()) of \(model.expectedOutcomes.formatted())")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
                 Spacer()
                 if let freed = model.freedBytes {
-                    Text("\(Format.bytes(max(freed, 0))) freed").font(.title3).foregroundStyle(.green)
+                    Text("\(Format.bytes(max(freed, 0))) freed").font(.title3.monospacedDigit()).foregroundStyle(.green)
                 }
             }
-            List(model.outcomes) { outcome in
-                DisclosureGroup {
-                    Text(outcome.log.isEmpty ? "No output" : outcome.log)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Label(outcome.label, systemImage: outcome.succeeded ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                            .foregroundStyle(outcome.succeeded ? .green : .red)
-                        if let error = outcome.error {
-                            Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        }
+            if model.isCleaning {
+                ProgressView(value: Double(min(model.outcomes.count, model.expectedOutcomes)),
+                             total: Double(max(model.expectedOutcomes, 1)))
+            }
+            List {
+                if !failed.isEmpty {
+                    Section("Not cleaned (\(failed.count.formatted()))") {
+                        ForEach(failed) { OutcomeRow(outcome: $0) }
                     }
+                }
+                Section("Cleaned (\(succeeded.count.formatted()))") {
+                    ForEach(succeeded) { OutcomeRow(outcome: $0) }
                 }
             }
             HStack {
-                Text("Free space can lag by a minute while APFS releases blocks and Time Machine local snapshots expire.")
+                Text(model.isCleaning
+                     ? "Folders leave their place at once; their files are deleted in the background."
+                     : "Free space can lag by a minute while APFS releases blocks and Time Machine local snapshots expire.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if model.isCleaning {
+                    Button("Hide") { dismiss() }
+                        .help("Keep cleaning in the background")
                     Button("Stop") { model.cancelClean() }
                 } else {
                     Button("Close") { dismiss() }.keyboardShortcut(.defaultAction)
@@ -93,6 +99,27 @@ struct ResultsView: View {
         }
         .padding(20)
         .frame(width: 640, height: 480)
+    }
+}
+
+struct OutcomeRow: View {
+    let outcome: CleanOutcome
+
+    var body: some View {
+        DisclosureGroup {
+            Text(outcome.log.isEmpty ? "No output" : outcome.log)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Label(outcome.label, systemImage: outcome.succeeded ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                    .foregroundStyle(outcome.succeeded ? .green : .red)
+                if let error = outcome.error {
+                    Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
+        }
     }
 }
 

@@ -10,16 +10,20 @@ public struct WorktreeInfo: Sendable, Hashable {
     /// Checked-out submodules make git refuse a plain `worktree remove`; the cleaner then
     /// uses `--force`, but only after a fresh inspection finds no problems.
     public let hasSubmodules: Bool
+    /// Git-ignored build output inside the worktree (node_modules, .turbo, …), relative to it.
+    /// The cleaner moves these to the purge area before `git worktree remove`.
+    public let rebuildablePaths: [String]
 
     public init(
         repoPath: String, branch: String? = nil, problems: [String]? = nil,
-        warnings: [String] = [], hasSubmodules: Bool = false
+        warnings: [String] = [], hasSubmodules: Bool = false, rebuildablePaths: [String] = []
     ) {
         self.repoPath = repoPath
         self.branch = branch
         self.problems = problems
         self.warnings = warnings
         self.hasSubmodules = hasSubmodules
+        self.rebuildablePaths = rebuildablePaths
     }
 }
 
