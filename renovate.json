@@ -1,6 +1,70 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:best-practices",
+    "schedule:weekly"
+  ],
+  "timezone": "Australia/Hobart",
+  "platformAutomerge": false,
+  "automergeStrategy": "squash",
+  "labels": ["dependencies"],
+  "minimumReleaseAge": "14 days",
+  "internalChecksFilter": "strict",
+  "semanticCommits": "enabled",
+  "semanticCommitType": "build",
+  "osvVulnerabilityAlerts": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Bump the pinned zizmor CLI version: the `version: X.Y.Z # pin the CLI` input to zizmor-action. Copied from the isw-kudos/renovate-config :gha preset, which this repo cannot extend: the hosted Renovate app cannot read that private repo.",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/zizmor\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "version:\\s*v?(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s*#\\s*pin the CLI"
+      ],
+      "depNameTemplate": "zizmorcore/zizmor",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v?(?<version>.+)$"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"]
+  },
+  "packageRules": [
+    {
+      "description": "Skip minimumReleaseAge for pin updates. Pins carry no release timestamp (renovatebot/renovate#40288), so under timestamp-required they stay pending forever.",
+      "matchUpdateTypes": ["pin"],
+      "minimumReleaseAge": null
+    },
+    {
+      "description": "GitHub Actions updates use the ci: commit type, matching repo convention",
+      "matchManagers": ["github-actions"],
+      "semanticCommitType": "ci"
+    },
+    {
+      "description": "Major updates wait for approval on the Dependency Dashboard",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Automerge GitHub Actions digest and patch/minor updates once the required-checks gate passes",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "automerge": true
+    },
+    {
+      "description": "Zizmor: the pinned CLI version and the zizmor-action release must move together in ONE gated PR. The action ships a per-version allowlist and fails with 'Unknown version' when the CLI pin is newer than the SHA-pinned action release supports (see isw-kudos/boards#341). The workflow `version:` literal is claimed twice: the zizmor customManager reads it as the github-releases dep zizmorcore/zizmor, and the built-in github-actions manager reads it as the docker dep ghcr.io/zizmorcore/zizmor. ghcr has no release timestamps, so under the default timestamp-required minimumReleaseAgeBehaviour the ghcr dep stays pending and is dropped from the branch; it is listed only so it cannot get its own automerging branch. separateMajorMinor: false keeps a CLI major (e.g. 2.0) in the same PR as the still-0.x action instead of splitting it onto a major-zizmor branch. Mirrors the isw-kudos/renovate-config default preset. This rule MUST stay after the GitHub Actions automerge rule so automerge: false wins.",
+      "groupName": "Zizmor",
+      "matchPackageNames": [
+        "ghcr.io/zizmorcore/zizmor",
+        "zizmorcore/zizmor",
+        "zizmorcore/zizmor-action"
+      ],
+      "semanticCommitType": "ci",
+      "separateMajorMinor": false,
+      "automerge": false,
+      "dependencyDashboardApproval": true
+    }
   ]
 }
