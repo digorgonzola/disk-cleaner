@@ -712,6 +712,34 @@ struct ReclaimableTests {
         #expect(try await estimate("podman", tools: podmanTools(journalBytes: 50_000_000)) == .bytes(510_825_984))
     }
 
+    @Test func podmanCleanTrimsAlsoWhenTheJournalStepFails() async throws {
+        let bin = FileManager.default.temporaryDirectory.appendingPathComponent("dc-tools-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: bin) }
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let tools = [
+            "podman": """
+            case "$1 $2" in
+              "system prune") exit 0 ;;
+              "machine ssh") [ "$3" = -- ] && [ $# -eq 4 ] || exit 2; sh -c "$4" ;;
+              *) exit 2 ;;
+            esac
+            """,
+            "sudo": "exec \"$@\"",
+            "journalctl": "[ \"$*\" = \"--rotate --vacuum-size=100M\" ] || exit 2; exit 3",
+            "fstrim": "echo trimmed",
+        ]
+        for (name, script) in tools {
+            let url = bin.appendingPathComponent(name)
+            try ("#!/bin/sh\n" + script).write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        let rule = try #require(RuleCatalog.all.first { $0.id == "podman" })
+        let output = try await ProcessRunner.run("/bin/zsh", ["-c", try #require(rule.cleanCommand)],
+                                                 environment: ["HOME": bin.path, "PATH": bin.path + ":/usr/bin:/bin"])
+        #expect(output.stdout.contains("trimmed"))
+        #expect(output.status == 3, "the journal step's failure must still be reported")
+    }
+
     @Test func dockerQueryReadsDecimalUnits() async throws {
         let docker = """
         [ "$*" = "--context desktop-linux system df --format {{.Type}}={{.Reclaimable}}" ] || { echo "unexpected: $*" >&2; exit 2; }
@@ -772,10 +800,14 @@ struct CleanReportTests {
         // a is gone (with its nested folder); b is gone; the VM image shrank; grew got bigger.
         let after: [String: Int64] = ["/h/vm": 400, "/h/grew": 30]
         #expect(CleanReport.removedBytes(before: before, after: after) == 100 + 50 + 600)
+        // The outer folder is not in `after`, but a nested one stayed.
+        #expect(CleanReport.removedBytes(before: ["/h/a": 100, "/h/a/nm": 60], after: ["/h/a/nm": 60]) == 40)
     }
 }
 
 struct ProcessTreeTests {
+    /// `a && b` keeps `a` as a child of the shell. It must stop with the shell, or a hung
+    /// `podman machine ssh` outlives every timeout.
     @Test func timeoutStopsChildrenOfTheShell() async throws {
         // A unique duration marks this test's processes.
         let marker = "47.\(Int.random(in: 100_000...999_999))"
