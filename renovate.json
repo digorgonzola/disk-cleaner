@@ -7,11 +7,12 @@
   "timezone": "Australia/Hobart",
   "platformAutomerge": false,
   "automergeStrategy": "squash",
-  "labels": ["dependencies"],
+  "labels": [
+    "dependencies"
+  ],
   "minimumReleaseAge": "14 days",
   "internalChecksFilter": "strict",
   "semanticCommits": "enabled",
-  "semanticCommitType": "build",
   "osvVulnerabilityAlerts": true,
   "customManagers": [
     {
@@ -29,32 +30,41 @@
     }
   ],
   "vulnerabilityAlerts": {
-    "labels": ["security"]
+    "addLabels": [
+      "security"
+    ]
   },
   "packageRules": [
     {
-      "description": "Skip minimumReleaseAge for pin updates. Pins carry no release timestamp (renovatebot/renovate#40288), so under timestamp-required they stay pending forever.",
-      "matchUpdateTypes": ["pin"],
-      "minimumReleaseAge": null
-    },
-    {
       "description": "GitHub Actions updates use the ci: commit type, matching repo convention",
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "semanticCommitType": "ci"
     },
     {
       "description": "Major updates wait for approval on the Dependency Dashboard",
-      "matchUpdateTypes": ["major"],
+      "matchUpdateTypes": [
+        "major"
+      ],
       "dependencyDashboardApproval": true
     },
     {
       "description": "Automerge GitHub Actions digest and patch/minor updates once the required-checks gate passes",
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest",
+        "pin",
+        "pinDigest"
+      ],
       "automerge": true
     },
     {
-      "description": "Zizmor: the pinned CLI version and the zizmor-action release must move together in ONE gated PR. The action ships a per-version allowlist and fails with 'Unknown version' when the CLI pin is newer than the SHA-pinned action release supports (see isw-kudos/boards#341). The workflow `version:` literal is claimed twice: the zizmor customManager reads it as the github-releases dep zizmorcore/zizmor, and the built-in github-actions manager reads it as the docker dep ghcr.io/zizmorcore/zizmor. ghcr has no release timestamps, so under the default timestamp-required minimumReleaseAgeBehaviour the ghcr dep stays pending and is dropped from the branch; it is listed only so it cannot get its own automerging branch. separateMajorMinor: false keeps a CLI major (e.g. 2.0) in the same PR as the still-0.x action instead of splitting it onto a major-zizmor branch. Mirrors the isw-kudos/renovate-config default preset. This rule MUST stay after the GitHub Actions automerge rule so automerge: false wins.",
+      "description": "Zizmor: the pinned CLI version and the zizmor-action release must move together in ONE gated PR. The action ships a per-version allowlist and fails with 'Unknown version' when the CLI pin is newer than the SHA-pinned action release supports (see isw-kudos/boards#341). The workflow `version:` literal is claimed twice: the zizmor customManager reads it as the github-releases dep zizmorcore/zizmor, and the built-in github-actions manager reads it as the docker dep ghcr.io/zizmorcore/zizmor. ghcr has no release timestamps, so under the default timestamp-required minimumReleaseAgeBehaviour the ghcr dep stays pending and is dropped from the branch; it is listed only so it cannot get its own automerging branch. separateMajorMinor: false keeps a CLI major (e.g. 2.0) in the same PR as the still-0.x action instead of splitting it onto a major-zizmor branch. Grouping only joins updates that are mature in the same run, so a CLI release can land in the group before the action release that supports it; the approver must check that both moved. Mirrors the isw-kudos/renovate-config default preset. This rule MUST stay after the GitHub Actions automerge rule so automerge: false wins.",
       "groupName": "Zizmor",
       "matchPackageNames": [
         "ghcr.io/zizmorcore/zizmor",
@@ -65,6 +75,13 @@
       "separateMajorMinor": false,
       "automerge": false,
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Never digest-pin the ghcr zizmor image. The github-actions manager reads the zizmor-action `version:` input as this docker dep, and docker:pinDigests (from config:best-practices) would propose a digest for a line that must stay a bare CLI version. The zizmor customManager owns that line.",
+      "matchPackageNames": [
+        "ghcr.io/zizmorcore/zizmor"
+      ],
+      "pinDigests": false
     }
   ]
 }
