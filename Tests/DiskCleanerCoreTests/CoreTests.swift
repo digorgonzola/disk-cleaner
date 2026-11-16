@@ -689,11 +689,16 @@ struct ReclaimableTests {
 
     @Test func podmanQueryLeavesOutVolumes() async throws {
         // The fake prints its arguments' format back, so a changed format string fails here.
+        // The journal line comes from inside the VM; the fake answers like the VM's shell.
         let podman = """
-        [ "$*" = "system df --format {{.Type}}={{.RawReclaimable}}" ] || { echo "unexpected: $*" >&2; exit 2; }
-        printf 'Images=510825984\\nContainers=0\\nLocal Volumes=11732066549\\n'
+        case "$1 $2" in
+          "machine ssh") echo Journal=4434042624 ;;
+          "system df") [ "$*" = "system df --format {{.Type}}={{.RawReclaimable}}" ] || { echo "unexpected: $*" >&2; exit 2; }
+                       printf 'Images=510825984\\nContainers=0\\nLocal Volumes=11732066549\\n' ;;
+          *) echo "unexpected: $*" >&2; exit 2 ;;
+        esac
         """
-        #expect(try await estimate("podman", tools: ["podman": podman]) == .bytes(510_825_984))
+        #expect(try await estimate("podman", tools: ["podman": podman]) == .bytes(510_825_984 + 4_434_042_624))
     }
 
     @Test func dockerQueryReadsDecimalUnits() async throws {

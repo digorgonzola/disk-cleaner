@@ -166,12 +166,16 @@ public enum RuleCatalog {
     static let containers: [CleanupRule] = [
         CleanupRule(
             id: "podman", name: "Podman machine", category: .containers,
-            detail: "The Podman VM disk image. Cleaning runs `podman system prune --all` (unused images, stopped containers, build cache), then `fstrim` so the host gets the space back. The size shown is about what `podman system df` says the prune can free, not the disk image. Volumes are kept: check them with `podman volume ls`. The machine must be running.",
+            detail: "The Podman VM disk image. Cleaning runs `podman system prune --all` (unused images, stopped containers, build cache), shrinks the VM's system journal to 100 MB, then runs `fstrim` so the host gets the space back. The size shown is about what `podman system df` says the prune can free, plus the journal above 100 MB. It is not the disk image size. Volumes are kept: check them with `podman volume ls`. The machine must be running.",
             risk: .caution, target: .homePaths([".local/share/containers/podman/machine"]),
-            cleanCommand: "podman system prune --all --force && podman machine ssh -- sudo fstrim -av",
+            cleanCommand: "podman system prune --all --force && podman machine ssh -- 'sudo journalctl --rotate --vacuum-size=100M && sudo fstrim -av'",
             canDeleteWithoutCommand: false,
-            reclaimable: ReclaimableQuery(command: "exec podman system df --format '{{.Type}}={{.RawReclaimable}}'",
-                                          excludedLabels: ["Local Volumes"])),
+            // The journal first: it is quick, and `exec` then makes the slow df the shell itself,
+            // so a timeout stops it.
+            reclaimable: ReclaimableQuery(
+                command: "podman machine ssh -- 'j=$(sudo du -sb /var/log/journal | cut -f1); echo Journal=$(( j > 104857600 ? j - 104857600 : 0 ))'"
+                    + " && exec podman system df --format '{{.Type}}={{.RawReclaimable}}'",
+                excludedLabels: ["Local Volumes"])),
         CleanupRule(
             id: "docker-desktop", name: "Docker Desktop", category: .containers,
             detail: "The Docker Desktop VM disk. Cleaning runs `docker system prune --all` against the desktop-linux context: stopped containers, unused images and networks, build cache. The size shown is about what `docker system df` says the prune can free, not the disk image. Volumes are kept. Docker Desktop must be running.",
