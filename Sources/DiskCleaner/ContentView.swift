@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
+    @Environment(Updater.self) private var updater
     @State private var isConfirming = false
     @State private var isShowingResults = false
     @State private var isEditingRoots = false
@@ -42,6 +43,10 @@ struct ContentView: View {
             }
         } detail: {
             VStack(spacing: 0) {
+                if let release = updater.available {
+                    UpdateBanner(release: release)
+                    Divider()
+                }
                 SummaryHeader()
                 Divider()
                 detail
@@ -77,6 +82,17 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $isShowingResults) { ResultsView() }
+        .alert(
+            "Software Update",
+            isPresented: Binding(
+                get: { updater.manualResultPlace == .window && updater.manualResult != nil },
+                set: { if !$0 { updater.manualResult = nil } }
+            )
+        ) {
+            Button("OK") { updater.manualResult = nil }
+        } message: {
+            Text(updater.manualResult ?? "")
+        }
         .sheet(isPresented: $isEditingRoots) {
             ProjectRootsView().frame(width: 520, height: 360)
         }
