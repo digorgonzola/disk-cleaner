@@ -67,9 +67,12 @@ public enum RuleCatalog {
     static let packageManagers: [CleanupRule] = [
         CleanupRule(
             id: "pnpm-store", name: "pnpm store", category: .packageManagers,
-            detail: "Content-addressed package store. `pnpm store prune` removes only packages no project references.",
+            detail: "Content-addressed package store. `pnpm store prune` removes only packages that no project uses. pnpm cannot tell in advance how much that is, so the store does not count toward the cleanable total.",
             target: .homePaths(["Library/pnpm/store"]),
-            cleanCommand: "pnpm store prune", canDeleteWithoutCommand: false),
+            cleanCommand: "pnpm store prune", canDeleteWithoutCommand: false,
+            // On APFS pnpm clones files into node_modules, so link counts cannot show what is
+            // in use, and `store prune` has no dry run.
+            reclaimable: .cannotTell("pnpm cannot tell before it prunes, and it removes only packages that no project uses")),
         CleanupRule(
             id: "pnpm-metadata", name: "pnpm metadata cache", category: .packageManagers,
             detail: "Registry metadata that pnpm re-fetches on demand.",

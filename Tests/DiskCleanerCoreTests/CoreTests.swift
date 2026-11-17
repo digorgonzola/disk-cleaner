@@ -97,6 +97,20 @@ struct CatalogTests {
     }
 }
 
+struct PnpmStoreTests {
+    @Test func storeSizeIsNotCountedAsCleanable() async throws {
+        let rule = try #require(RuleCatalog.all.first { $0.id == "pnpm-store" })
+        let answer = try #require(await rule.reclaimable?.estimate(shell: Shell(path: "/usr/bin:/bin")))
+        guard case .unknown = answer else {
+            Issue.record("expected unknown, got \(answer)")
+            return
+        }
+        var item = ScanItem(ruleID: rule.id, path: "/s", usage: Usage(bytes: 17_000_000_000, lastModified: nil, protectedFiles: []))
+        item.reclaimable = answer
+        #expect(item.bytes == 0)
+    }
+}
+
 struct ScannerTests {
     /// Builds a throwaway tree that looks like a home folder with one repo in it.
     func makeFixture() throws -> URL {
@@ -724,7 +738,7 @@ struct ReclaimableTests {
         }
         let rule = try #require(RuleCatalog.all.first { $0.id == ruleID })
         let query = try #require(rule.reclaimable)
-        let output = try await ProcessRunner.run("/bin/zsh", ["-c", query.command],
+        let output = try await ProcessRunner.run("/bin/zsh", ["-c", try #require(query.command)],
                                                  environment: ["HOME": bin.path, "PATH": bin.path + ":/usr/bin:/bin"])
         return query.parse(output)
     }

@@ -31,7 +31,7 @@ for (ruleID, ruleItems) in byRule.sorted(by: { $0.value.reduce(0) { $0 + $1.byte
     let onDisk = ruleItems.reduce(0) { $0 + ($1.usage?.bytes ?? 0) }
     let estimate = ruleItems.compactMap(\.reclaimable).map { reclaimable -> String in
         switch reclaimable {
-        case .unknown(let reason): return "  (cannot tell what cleaning frees: \(reason))"
+        case .unknown(let reason): return "  (\(format(onDisk)) on disk; cannot tell what cleaning frees: \(reason))"
         case .pending: return "  (no answer from the tool)"
         case .bytes: return "  (of \(format(onDisk)) on disk)"
         }

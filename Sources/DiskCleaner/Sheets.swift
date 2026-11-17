@@ -11,7 +11,10 @@ struct ConfirmCleanView: View {
         let byRule = Dictionary(grouping: model.selectedItems, by: \.ruleID)
         let rules = byRule.keys.compactMap { model.rulesByID[$0] }.sorted { $0.name < $1.name }
         VStack(alignment: .leading, spacing: 14) {
-            Text("Clean \(Format.bytes(model.selectedBytes()))?").font(.title2.bold())
+            let selectedBytes = model.selectedBytes()
+            // A selection of tool cleans whose size the tool cannot tell adds up to 0 bytes.
+            Text(selectedBytes > 0 ? "Clean \(Format.bytes(selectedBytes))?" : "Clean \(model.selectedItems.count) item\(model.selectedItems.count == 1 ? "" : "s")?")
+                .font(.title2.bold())
             Text("Files are deleted, not moved to the Trash. Where a tool has its own clean command, the app runs that instead.")
                 .foregroundStyle(.secondary)
             List(rules) { rule in
@@ -26,7 +29,10 @@ struct ConfirmCleanView: View {
                             .font(.caption.monospaced()).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text(Format.bytes(items.reduce(0) { $0 + $1.bytes })).monospacedDigit()
+                    let bytes = items.reduce(0) { $0 + $1.bytes }
+                    let isUnknown = bytes == 0 && items.contains { if case .unknown = $0.reclaimable { true } else { false } }
+                    Text(isUnknown ? "Unknown" : Format.bytes(bytes)).monospacedDigit()
+                        .foregroundStyle(isUnknown ? .secondary : .primary)
                 }
             }
             .frame(minHeight: 220)

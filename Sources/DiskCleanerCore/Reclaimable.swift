@@ -14,14 +14,28 @@ public enum Reclaimable: Sendable, Hashable {
 /// answer is for the whole tool, so a second path would count it twice.
 public struct ReclaimableQuery: Sendable {
     /// Prints one `<label>=<size>` line per kind of data, such as `system df` with a format.
-    /// Text after the size, such as "(45%)", is ignored.
-    public let command: String
+    /// Text after the size, such as "(45%)", is ignored. `nil` when the tool cannot tell.
+    public let command: String?
     /// Labels of the data the clean keeps, such as volumes.
     public let excludedLabels: Set<String>
+    private let reasonWithoutCommand: String?
 
     public init(command: String, excludedLabels: Set<String> = []) {
         self.command = command
         self.excludedLabels = excludedLabels
+        reasonWithoutCommand = nil
+    }
+
+    private init(cannotTell reason: String) {
+        command = nil
+        excludedLabels = []
+        reasonWithoutCommand = reason
+    }
+
+    /// For a tool that cannot report in advance what its clean frees. The folder size then
+    /// does not count as cleanable, because the clean can free nothing.
+    public static func cannotTell(_ reason: String) -> ReclaimableQuery {
+        ReclaimableQuery(cannotTell: reason)
     }
 
     /// `system df` in VMs with large volumes can take half a minute.
@@ -30,6 +44,7 @@ public struct ReclaimableQuery: Sendable {
     /// - Returns: `nil` when the task is cancelled. There is then no new answer, and the
     ///   caller keeps the one it has.
     public func estimate(shell: Shell = .shared) async -> Reclaimable? {
+        guard let command else { return .unknown(reason: reasonWithoutCommand ?? "the tool cannot tell") }
         let output: ProcessOutput
         do {
             output = try await shell.run(command, timeout: Self.timeout)

@@ -66,7 +66,7 @@ struct ContentView: View {
                 Button {
                     isConfirming = true
                 } label: {
-                    Label(model.selection.isEmpty ? "Clean…" : "Clean \(Format.bytes(model.selectedBytes()))…", systemImage: "trash")
+                    Label(model.selectedBytes() > 0 ? "Clean \(Format.bytes(model.selectedBytes()))…" : "Clean…", systemImage: "trash")
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(.borderedProminent)
@@ -422,7 +422,8 @@ struct ReclaimableNote: View {
                   systemImage: "internaldrive")
                 .foregroundStyle(.secondary)
         case .unknown(let reason):
-            let text = "Cannot tell what cleaning frees: \(reason)"
+            let onDisk = item.usage.map { " (\(Format.bytes($0.bytes)) on disk)" } ?? ""
+            let text = "Cannot tell what cleaning frees\(onDisk): \(reason)"
             Label(text, systemImage: "questionmark.circle")
                 .foregroundStyle(.orange)
                 .help(text)
