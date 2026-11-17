@@ -66,7 +66,7 @@ struct ContentView: View {
                 Button {
                     isConfirming = true
                 } label: {
-                    Label(model.selection.isEmpty ? "Clean…" : "Clean \(Format.bytes(model.selectedBytes()))…", systemImage: "trash")
+                    Label(model.selectedBytes() > 0 ? "Clean \(Format.bytes(model.selectedBytes()))…" : "Clean…", systemImage: "trash")
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(.borderedProminent)
@@ -386,13 +386,15 @@ struct RuleHeader: View {
                     if let blocker = item.blocker {
                         Label(blocker, systemImage: "lock.fill").font(.caption).foregroundStyle(.red)
                     }
-                    ReclaimableNote(item: item).font(.caption)
+                    ReclaimableNote(item: item, isUnknownByDesign: rule.reclaimable?.isUnknownByDesign == true).font(.caption)
                 }
             }
             Spacer(minLength: 12)
             VStack(alignment: .trailing, spacing: 2) {
-                Text(Format.bytes(model.totalBytes(for: rule)))
+                let size = Format.cleanableSize(of: items)
+                Text(size.text)
                     .font(.title3.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(size.isKnown ? .primary : .secondary)
                 if items.count > 1 {
                     let selected = items.filter { model.selection.contains($0.path) }.count
                     Text("\(items.count.formatted()) found" + (selected > 0 ? " · \(selected.formatted()) selected" : ""))
@@ -409,6 +411,8 @@ struct RuleHeader: View {
 /// For a rule whose tool estimates what cleaning frees: that estimate against the folder size.
 struct ReclaimableNote: View {
     let item: ScanItem
+    /// The tool can never tell, so "unknown" is normal and not a warning.
+    var isUnknownByDesign = false
 
     var body: some View {
         switch item.reclaimable {
@@ -422,9 +426,10 @@ struct ReclaimableNote: View {
                   systemImage: "internaldrive")
                 .foregroundStyle(.secondary)
         case .unknown(let reason):
-            let text = "Cannot tell what cleaning frees: \(reason)"
-            Label(text, systemImage: "questionmark.circle")
-                .foregroundStyle(.orange)
+            let onDisk = item.usage.map { " (\(Format.bytes($0.bytes)) on disk)" } ?? ""
+            let text = "Cannot tell what cleaning frees\(onDisk): \(reason)"
+            Label(text, systemImage: isUnknownByDesign ? "info.circle" : "questionmark.circle")
+                .foregroundStyle(isUnknownByDesign ? .secondary : Color.orange)
                 .help(text)
         case nil:
             EmptyView()
@@ -503,7 +508,7 @@ struct ItemRow: View {
                         .foregroundStyle(.orange)
                         .help(warning)
                 }
-                ReclaimableNote(item: item)
+                ReclaimableNote(item: item, isUnknownByDesign: model.rulesByID[item.ruleID]?.reclaimable?.isUnknownByDesign == true)
             }
             .font(.caption)
             .lineLimit(1)

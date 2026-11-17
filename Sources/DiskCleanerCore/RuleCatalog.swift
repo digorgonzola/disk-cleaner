@@ -67,9 +67,15 @@ public enum RuleCatalog {
     static let packageManagers: [CleanupRule] = [
         CleanupRule(
             id: "pnpm-store", name: "pnpm store", category: .packageManagers,
-            detail: "Content-addressed package store. `pnpm store prune` removes only packages no project references.",
+            detail: "Content-addressed package store. `pnpm store prune` removes only packages that no project uses, and pnpm cannot tell in advance how much that is. The store of pnpm 10 (v10) is pruned with pnpm 10 through npx, because a newer pnpm prunes only its own store.",
             target: .homePaths(["Library/pnpm/store"]),
-            cleanCommand: "pnpm store prune", canDeleteWithoutCommand: false),
+            // pnpm 10 writes a test file in the working folder, and a GUI app starts in the
+            // read-only "/", so it runs from the home folder.
+            cleanCommand: "pnpm store prune && if [ -d \"$HOME/Library/pnpm/store/v10\" ]; then cd \"$HOME\" && npx --yes pnpm@10 store prune; fi",
+            canDeleteWithoutCommand: false,
+            // On APFS pnpm clones files into node_modules, so link counts cannot show what is
+            // in use, and `store prune` has no dry run.
+            reclaimable: .cannotTell("pnpm cannot tell before it prunes, and it removes only packages that no project uses")),
         CleanupRule(
             id: "pnpm-metadata", name: "pnpm metadata cache", category: .packageManagers,
             detail: "Registry metadata that pnpm re-fetches on demand.",

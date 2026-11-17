@@ -3,6 +3,16 @@ import Foundation
 import SwiftUI
 
 enum Format {
+    /// The size cleaning frees, or why there is none: "Asking…" while a tool answers,
+    /// "Unknown" when it cannot tell.
+    static func cleanableSize(of items: [ScanItem]) -> (text: String, isKnown: Bool) {
+        let bytes = items.reduce(0) { $0 + $1.bytes }
+        if bytes > 0 { return (Self.bytes(bytes), true) }
+        if items.contains(where: { $0.reclaimable == .pending }) { return ("Asking…", false) }
+        if items.contains(where: { if case .unknown = $0.reclaimable { true } else { false } }) { return ("Unknown", false) }
+        return (Self.bytes(0), true)
+    }
+
     static func bytes(_ value: Int64) -> String {
         value == 0 ? "—" : ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
     }
