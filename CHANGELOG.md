@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/digorgonzola/disk-cleaner/compare/v0.3.0...v0.3.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **rules:** pnpm store size is unknown, and prune the pnpm 10 store ([#19](https://github.com/digorgonzola/disk-cleaner/issues/19)) ([395df53](https://github.com/digorgonzola/disk-cleaner/commit/395df535829e497af0537aa94123a6f826098749))
+
 ## [0.3.0](https://github.com/digorgonzola/disk-cleaner/compare/v0.2.1...v0.3.0) (2026-11-16)
 
 
