@@ -101,7 +101,7 @@ struct PnpmStoreTests {
     @Test func storeSizeIsNotCountedAsCleanable() async throws {
         let rule = try #require(RuleCatalog.all.first { $0.id == "pnpm-store" })
         // The store is live data: only pnpm may touch it (CLAUDE.md).
-        #expect(rule.cleanCommand == "pnpm store prune")
+        #expect(rule.cleanCommand?.hasPrefix("pnpm store prune") == true)
         #expect(!rule.canDeleteWithoutCommand)
         #expect(rule.reclaimable?.command == nil)
         #expect(rule.reclaimable?.isUnknownByDesign == true)
@@ -113,6 +113,44 @@ struct PnpmStoreTests {
         var item = ScanItem(ruleID: rule.id, path: "/s", usage: Usage(bytes: 17_000_000_000, lastModified: nil, protectedFiles: []))
         item.reclaimable = answer
         #expect(item.bytes == 0)
+    }
+
+    /// Runs the rule's clean command with fake `pnpm` and `npx` that report how they ran.
+    func runClean(withV10Store: Bool) async throws -> ProcessOutput {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("dc-pnpm-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let bin = home.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent("Library/pnpm/store/v11"), withIntermediateDirectories: true)
+        if withV10Store {
+            try FileManager.default.createDirectory(at: home.appendingPathComponent("Library/pnpm/store/v10"), withIntermediateDirectories: true)
+        }
+        for (name, script) in ["pnpm": "echo \"pnpm $*\"", "npx": "echo \"npx $* in $PWD\""] {
+            let url = bin.appendingPathComponent(name)
+            try ("#!/bin/sh\n" + script).write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        }
+        let rule = try #require(RuleCatalog.all.first { $0.id == "pnpm-store" })
+        // The app starts in "/", which is read-only.
+        return try await ProcessRunner.run("/bin/zsh", ["-c", "cd / && " + (try #require(rule.cleanCommand))],
+                                           environment: ["HOME": home.path, "PATH": bin.path + ":/usr/bin:/bin"])
+    }
+
+    @Test func prunesTheV10StoreWithPnpm10FromTheHomeFolder() async throws {
+        let output = try await runClean(withV10Store: true)
+        #expect(output.succeeded, "\(output.stderr)")
+        let lines = output.stdout.split(separator: "\n").map(String.init)
+        #expect(lines.first == "pnpm store prune")
+        #expect(lines.count == 2)
+        #expect(lines.last?.hasPrefix("npx --yes pnpm@10 store prune in /") == true)
+        #expect(lines.last?.hasSuffix("/Library/pnpm/store") == false)
+        #expect(lines.last?.contains("dc-pnpm-") == true, "pnpm 10 must run from the home folder")
+    }
+
+    @Test func skipsPnpm10WithoutAV10Store() async throws {
+        let output = try await runClean(withV10Store: false)
+        #expect(output.succeeded, "\(output.stderr)")
+        #expect(output.stdout == "pnpm store prune\n")
     }
 }
 
