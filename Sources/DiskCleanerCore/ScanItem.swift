@@ -33,7 +33,7 @@ public struct ScanItem: Identifiable, Sendable, Hashable {
     public let path: String
     public var usage: Usage?
     public var worktree: WorktreeInfo?
-    /// Set for rules with a `reclaimableCommand`; replaces the folder size in `bytes`.
+    /// Set for rules with a `reclaimable` query; replaces the folder size in `bytes`.
     public var reclaimable: Reclaimable?
 
     public init(

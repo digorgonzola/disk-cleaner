@@ -13,23 +13,25 @@ public enum Reclaimable: Sendable, Hashable {
 /// Asks a tool how much its clean command can free. For rules with one home path: the
 /// answer is for the whole tool, so a second path would count it twice.
 public struct ReclaimableQuery: Sendable {
-    /// Prints one `<label>=<size>` line per kind of data, such as `system df` with a format.
-    /// Text after the size, such as "(45%)", is ignored. `nil` when the tool cannot tell.
-    public let command: String?
+    private enum Source: Sendable {
+        /// Prints one `<label>=<size>` line per kind of data, such as `system df` with a
+        /// format. Text after the size, such as "(45%)", is ignored.
+        case command(String)
+        case cannotTell(reason: String)
+    }
+
+    private let source: Source
     /// Labels of the data the clean keeps, such as volumes.
     public let excludedLabels: Set<String>
-    private let reasonWithoutCommand: String?
 
     public init(command: String, excludedLabels: Set<String> = []) {
-        self.command = command
+        source = .command(command)
         self.excludedLabels = excludedLabels
-        reasonWithoutCommand = nil
     }
 
     private init(cannotTell reason: String) {
-        command = nil
+        source = .cannotTell(reason: reason)
         excludedLabels = []
-        reasonWithoutCommand = reason
     }
 
     /// For a tool that cannot report in advance what its clean frees. The folder size then
@@ -38,13 +40,26 @@ public struct ReclaimableQuery: Sendable {
         ReclaimableQuery(cannotTell: reason)
     }
 
+    public var command: String? {
+        if case .command(let command) = source { command } else { nil }
+    }
+
+    /// True when "unknown" is this rule's normal answer, not a failure.
+    public var isUnknownByDesign: Bool {
+        if case .cannotTell = source { true } else { false }
+    }
+
     /// `system df` in VMs with large volumes can take half a minute.
     static let timeout: Duration = .seconds(180)
 
     /// - Returns: `nil` when the task is cancelled. There is then no new answer, and the
     ///   caller keeps the one it has.
     public func estimate(shell: Shell = .shared) async -> Reclaimable? {
-        guard let command else { return .unknown(reason: reasonWithoutCommand ?? "the tool cannot tell") }
+        let command: String
+        switch source {
+        case .command(let text): command = text
+        case .cannotTell(let reason): return .unknown(reason: reason)
+        }
         let output: ProcessOutput
         do {
             output = try await shell.run(command, timeout: Self.timeout)

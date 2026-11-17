@@ -11,10 +11,7 @@ struct ConfirmCleanView: View {
         let byRule = Dictionary(grouping: model.selectedItems, by: \.ruleID)
         let rules = byRule.keys.compactMap { model.rulesByID[$0] }.sorted { $0.name < $1.name }
         VStack(alignment: .leading, spacing: 14) {
-            let selectedBytes = model.selectedBytes()
-            // A selection of tool cleans whose size the tool cannot tell adds up to 0 bytes.
-            Text(selectedBytes > 0 ? "Clean \(Format.bytes(selectedBytes))?" : "Clean \(model.selectedItems.count) item\(model.selectedItems.count == 1 ? "" : "s")?")
-                .font(.title2.bold())
+            Text(title).font(.title2.bold())
             Text("Files are deleted, not moved to the Trash. Where a tool has its own clean command, the app runs that instead.")
                 .foregroundStyle(.secondary)
             List(rules) { rule in
@@ -29,10 +26,9 @@ struct ConfirmCleanView: View {
                             .font(.caption.monospaced()).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    let bytes = items.reduce(0) { $0 + $1.bytes }
-                    let isUnknown = bytes == 0 && items.contains { if case .unknown = $0.reclaimable { true } else { false } }
-                    Text(isUnknown ? "Unknown" : Format.bytes(bytes)).monospacedDigit()
-                        .foregroundStyle(isUnknown ? .secondary : .primary)
+                    let size = Format.cleanableSize(of: items)
+                    Text(size.text).monospacedDigit()
+                        .foregroundStyle(size.isKnown ? .primary : .secondary)
                 }
             }
             .frame(minHeight: 220)
@@ -53,6 +49,20 @@ struct ConfirmCleanView: View {
         }
         .padding(20)
         .frame(width: 620, height: 480)
+    }
+
+    /// Tool cleans whose size is unknown add 0 bytes, so they are counted apart.
+    private var title: String {
+        let bytes = model.selectedBytes()
+        let unknown = model.selectedItems.filter { item in
+            switch item.reclaimable {
+            case .pending, .unknown: true
+            case .bytes, nil: false
+            }
+        }.count
+        let unknownText = "\(unknown) item\(unknown == 1 ? "" : "s") of unknown size"
+        if bytes == 0 { return unknown > 0 ? "Clean \(unknownText)?" : "Clean \(model.selectedItems.count) items?" }
+        return unknown > 0 ? "Clean \(Format.bytes(bytes)) and \(unknownText)?" : "Clean \(Format.bytes(bytes))?"
     }
 }
 

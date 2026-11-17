@@ -100,6 +100,11 @@ struct CatalogTests {
 struct PnpmStoreTests {
     @Test func storeSizeIsNotCountedAsCleanable() async throws {
         let rule = try #require(RuleCatalog.all.first { $0.id == "pnpm-store" })
+        // The store is live data: only pnpm may touch it (CLAUDE.md).
+        #expect(rule.cleanCommand == "pnpm store prune")
+        #expect(!rule.canDeleteWithoutCommand)
+        #expect(rule.reclaimable?.command == nil)
+        #expect(rule.reclaimable?.isUnknownByDesign == true)
         let answer = try #require(await rule.reclaimable?.estimate(shell: Shell(path: "/usr/bin:/bin")))
         guard case .unknown = answer else {
             Issue.record("expected unknown, got \(answer)")
